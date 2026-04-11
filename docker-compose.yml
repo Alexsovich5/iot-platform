@@ -1,0 +1,28 @@
+version: '2'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongo
+      - mosquitto
+    environment:
+      - NODE_ENV=production
+
+  mongo:
+    image: mongo:3.2
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  mosquitto:
+    image: eclipse-mosquitto:1.4
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+
+volumes:
+  mongo_data:
