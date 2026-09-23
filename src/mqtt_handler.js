@@ -1,6 +1,5 @@
 /**
  * MQTT Handler Module
- * IT Operations Specialist - ACORIA (2015-2016)
  *
  * Manages MQTT connections, subscriptions, and message routing
  * for IoT device communication.

@@ -1,6 +1,5 @@
 /**
  * IoT Device Management Platform - Main Server
- * IT Operations Specialist - ACORIA (2015-2016)
  *
  * Express server with MQTT integration for device management.
  */

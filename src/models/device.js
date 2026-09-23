@@ -1,6 +1,5 @@
 /**
  * Device Model
- * IT Operations Specialist - ACORIA (2015-2016)
  */
 
 'use strict';

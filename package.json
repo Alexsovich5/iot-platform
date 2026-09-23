@@ -1,7 +1,7 @@
 {
   "name": "iot-device-management-platform",
   "version": "1.0.0",
-  "description": "IoT Device Management Platform - ACORIA",
+  "description": "IoT Device Management Platform",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

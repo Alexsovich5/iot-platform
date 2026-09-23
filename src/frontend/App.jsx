@@ -1,6 +1,5 @@
 /**
  * IoT Dashboard - Main App Component
- * IT Operations Specialist - ACORIA (2015-2016)
  */
 
 var React = require('react');
