@@ -27,7 +27,7 @@ down:
 	$(COMPOSE) down
 
 smoke:
-	$(COMPOSE) up -d --build
+	COMPOSE="$(COMPOSE)" sh scripts/smoke.sh; status=$$?; $(COMPOSE) down -v; exit $$status
 
 shrinkwrap:
 	docker run --rm -v "$(CURDIR)":/app -w /app node:10 sh -c \
