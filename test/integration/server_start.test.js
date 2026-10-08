@@ -37,6 +37,23 @@ describe('server.start', function() {
             expect(started.mqttHandler.isConnected).to.be.a('function');
         });
 
+        it('starts the presence sweeper once Mongo is connected', function(done) {
+            var mongoose = require('mongoose');
+            function check() {
+                expect(started.presence).to.be.an('object');
+                expect(started.presence.offlineAfterSec).to.equal(120);
+                expect(started.presence.intervalSec).to.equal(30);
+                expect(started.presence.isRunning()).to.equal(true);
+                done();
+            }
+            if (mongoose.connection.readyState === 1) {
+                return setImmediate(check);
+            }
+            mongoose.connection.once('open', function() {
+                setImmediate(check);
+            });
+        });
+
         it('answers /health over HTTP', function(done) {
             request(started.baseUrl)
                 .get('/health')

@@ -240,7 +240,7 @@ can register with the shared provisioning key and receive a token.
 **Goal:** Change devices from online to offline when `lastSeen` is older than `offlineAfterSec`, and notify the dashboard.
 
 **Files:**
-- create `src/lib/presence.js`: `Presence({Device, io, offlineAfterSec, intervalSec})` with `start()`, `stop()` and `sweep(cb)`. `sweep` runs `updateMany`-style `Device.update({status:'online', lastSeen:{$lt: cutoff}}, {$set:{status:'offline'}}, {multi:true})`, emits one `status` event per affected ID with `io.emit` (IDs found first), and calls back with the count.
+- create `src/lib/presence.js`: `Presence({Device, io, offlineAfterSec, intervalSec})` with `start()`, `stop()` and `sweep(cb)`. `sweep` finds the IDs first, then runs `updateMany`-style `Device.update({deviceId:{$in: ids}, status:'online', lastSeen:{$lt: cutoff}}, {$set:{status:'offline'}}, {multi:true})` (the `$in` limits the update to the IDs the events will name), emits one `status` event per affected ID with `io.emit`, and calls back with the count. `server.start` exposes the sweeper as `presence` and `close()` stops it.
 - modify `src/server.js` to start the presence sweeper after Mongo connects.
 
 **Tests to write first:**

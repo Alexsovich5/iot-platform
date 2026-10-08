@@ -13,6 +13,8 @@ var socketIO = require('socket.io');
 var config = require('config');
 var MQTTHandler = require('./mqtt_handler');
 var createApp = require('./app');
+var Presence = require('./lib/presence');
+var Device = require('./models/device');
 
 function configValue(key, fallback) {
     return config.has(key) ? config.get(key) : fallback;
@@ -45,7 +47,7 @@ function setupSocketIO(io, mqttHandler) {
 
 // start(opts, cb) boots the platform. Overrides:
 //   port, mongoUri, mqtt, provisioningKey, publicBaseUrl, webhookUrl
-// cb(err, {server, port, baseUrl, mqttHandler, close})
+// cb(err, {server, port, baseUrl, mqttHandler, presence, close})
 function start(opts, cb) {
     if (typeof opts === 'function') {
         cb = opts;
@@ -64,6 +66,22 @@ function start(opts, cb) {
     });
     mqttConfig.port = parseInt(mqttConfig.port, 10) || 1883;
 
+    var server = http.createServer();
+    var io = socketIO(server);
+
+    var presence = new Presence({
+        Device: Device,
+        io: io,
+        offlineAfterSec: configValue('presence.offlineAfterSec', 120),
+        intervalSec: configValue('presence.sweepIntervalSec', 30)
+    });
+    var closed = false;
+    function startPresence() {
+        if (!closed) {
+            presence.start();
+        }
+    }
+
     if (mongoose.connection.readyState === 0) {
         var mongoUri = opts.mongoUri || config.get('mongodb.uri');
         mongoose.connect(mongoUri, function(err) {
@@ -72,12 +90,15 @@ function start(opts, cb) {
                 if (require.main === module) {
                     process.exit(1);
                 }
+                return;
             }
+            startPresence();
         });
+    } else if (mongoose.connection.readyState === 1) {
+        startPresence();
+    } else {
+        mongoose.connection.once('open', startPresence);
     }
-
-    var server = http.createServer();
-    var io = socketIO(server);
 
     var mqttHandler = new MQTTHandler(mqttConfig, io, {
         provisioningKey: opts.provisioningKey !== undefined ?
@@ -96,6 +117,9 @@ function start(opts, cb) {
 
     function close(done) {
         done = done || function() {};
+        closed = true;
+        presence.stop();
+        mongoose.connection.removeListener('open', startPresence);
         mqttHandler.close(function() {
             io.engine.close();
             server.close(function() {
@@ -113,6 +137,7 @@ function start(opts, cb) {
             port: boundPort,
             baseUrl: resolveBaseUrl(opts, boundPort),
             mqttHandler: mqttHandler,
+            presence: presence,
             close: close
         });
     });
