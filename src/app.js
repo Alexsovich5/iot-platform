@@ -24,6 +24,9 @@ function createApp(options) {
 
     var app = express();
     app.set('mqttHandler', mqttHandler);
+    app.set('alertService', options.alertService || null);
+    app.set('Rule', options.Rule || require('./models/rule'));
+    app.set('Alert', options.Alert || require('./models/alert'));
 
     app.use(bodyParser.json({limit: '100kb'}));
     app.use(express.static(path.join(__dirname, '..', 'public')));

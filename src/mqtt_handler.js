@@ -6,7 +6,7 @@
  * Devices can also self-provision with the shared provisioning key.
  *
  * Dependencies (Device model, mqtt module, provisioning key and the
- * telemetry hook) are injectable so the handler can be tested without a
+ * alert service) are injectable so the handler can be tested without a
  * broker or database.
  */
 
@@ -58,7 +58,7 @@ function MQTTHandler(mqttConfig, io, deps) {
     this.mqtt = deps.mqtt || require('mqtt');
     this.provisioningKey = deps.provisioningKey !== undefined ?
         deps.provisioningKey : configValue('provisioning.key', '');
-    this.onTelemetry = deps.onTelemetry || noop;
+    this.alerts = deps.alerts || null;
     this.onFirmware = deps.onFirmware || noop;
     this.maxTelemetryPoints = deps.maxTelemetryPoints || configValue('telemetry.maxPoints', 1000);
 
@@ -213,8 +213,15 @@ MQTTHandler.prototype._handleTelemetry = function(device, data, done) {
                 deviceId: device.deviceId,
                 data: reading
             });
-            self.onTelemetry(device, reading);
-            done();
+            if (!self.alerts) {
+                return done();
+            }
+            self.alerts.onTelemetry(device, reading, function(alertErr) {
+                if (alertErr) {
+                    console.error('Alert evaluation error:', alertErr.message);
+                }
+                done();
+            });
         }
     );
 };
@@ -264,17 +271,18 @@ MQTTHandler.prototype._emitStatusChange = function(device, status) {
 };
 
 MQTTHandler.prototype._handleAlert = function(device, data, done) {
-    if (!shortString(data.message)) {
+    if (!shortString(data.message) || !this.alerts) {
         return process.nextTick(done);
     }
-    this.io.emit('alert', {
-        deviceId: device.deviceId,
-        source: 'device',
+    this.alerts.fromDevice(device.deviceId, {
         severity: ALERT_SEVERITIES.indexOf(data.severity) !== -1 ? data.severity : 'warning',
-        message: data.message,
-        timestamp: new Date()
+        message: data.message
+    }, function(err) {
+        if (err) {
+            console.error('Device alert save error:', err.message);
+        }
+        done();
     });
-    process.nextTick(done);
 };
 
 MQTTHandler.prototype._handleRegistration = function(deviceId, data, done) {

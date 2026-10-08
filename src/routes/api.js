@@ -7,10 +7,14 @@
 var express = require('express');
 var Device = require('../models/device');
 var devices = require('./devices');
+var rules = require('./rules');
+var alerts = require('./alerts');
 
 var router = express.Router();
 
 router.use('/devices', devices);
+router.use('/rules', rules);
+router.use('/alerts', alerts);
 
 // Device counts by status.
 router.get('/stats', function(req, res, next) {

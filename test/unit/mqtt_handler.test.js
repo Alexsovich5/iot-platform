@@ -25,7 +25,7 @@ describe('MQTTHandler', function() {
     var io;
     var Device;
     var handler;
-    var onTelemetry;
+    var alerts;
     var storedDevice;
 
     beforeEach(function() {
@@ -43,12 +43,15 @@ describe('MQTTHandler', function() {
         };
         Device.findOne.yields(null, storedDevice);
         Device.findOneAndUpdate.yields(null, {deviceId: 'd1', status: 'online'});
-        onTelemetry = sinon.spy();
+        alerts = {
+            onTelemetry: sinon.stub().yields(null, []),
+            fromDevice: sinon.stub().yields(null, {})
+        };
         handler = new MQTTHandler({host: 'broker', port: 1883}, io, {
             Device: Device,
             mqtt: fake.mqtt,
             provisioningKey: KEY,
-            onTelemetry: onTelemetry,
+            alerts: alerts,
             maxTelemetryPoints: 50
         });
     });
@@ -150,7 +153,7 @@ describe('MQTTHandler', function() {
                 expect(handler.rejectedCount).to.equal(1);
                 expect(handler.stats()).to.deep.equal({rejectedMessages: 1});
                 expect(io.emitted).to.have.length(0);
-                expect(onTelemetry.called).to.equal(false);
+                expect(alerts.onTelemetry.called).to.equal(false);
                 done();
             });
         });
@@ -209,8 +212,9 @@ describe('MQTTHandler', function() {
                 expect(events[0].data.data.temperature).to.equal(21.5);
                 expect(events[0].data.data).to.not.have.property('token');
 
-                expect(onTelemetry.calledOnce).to.equal(true);
-                expect(onTelemetry.firstCall.args[1].temperature).to.equal(21.5);
+                expect(alerts.onTelemetry.calledOnce).to.equal(true);
+                expect(alerts.onTelemetry.firstCall.args[0].deviceId).to.equal('d1');
+                expect(alerts.onTelemetry.firstCall.args[1].temperature).to.equal(21.5);
                 expect(handler.rejectedCount).to.equal(0);
                 done();
             });
@@ -260,13 +264,13 @@ describe('MQTTHandler', function() {
     });
 
     describe('alerts', function() {
-        it('broadcasts an authenticated device alert', function(done) {
+        it('passes an authenticated device alert to the alert service', function(done) {
             handler.handleMessage('devices/d1/alerts', json({token: TOKEN, severity: 'critical', message: 'Overheat'}), function() {
-                var events = io.emittedTo(null, 'alert');
-                expect(events).to.have.length(1);
-                expect(events[0].data.deviceId).to.equal('d1');
-                expect(events[0].data.severity).to.equal('critical');
-                expect(events[0].data.message).to.equal('Overheat');
+                expect(alerts.fromDevice.calledOnce).to.equal(true);
+                var args = alerts.fromDevice.firstCall.args;
+                expect(args[0]).to.equal('d1');
+                expect(args[1]).to.deep.equal({severity: 'critical', message: 'Overheat'});
+                expect(io.emitted).to.have.length(0);
                 done();
             });
         });
@@ -274,11 +278,17 @@ describe('MQTTHandler', function() {
         it('defaults an unknown severity to warning and drops alerts without a message', function(done) {
             handler.handleMessage('devices/d1/alerts', json({token: TOKEN, severity: 'boom', message: 'x'}), function() {
                 handler.handleMessage('devices/d1/alerts', json({token: TOKEN}), function() {
-                    var events = io.emittedTo(null, 'alert');
-                    expect(events).to.have.length(1);
-                    expect(events[0].data.severity).to.equal('warning');
+                    expect(alerts.fromDevice.calledOnce).to.equal(true);
+                    expect(alerts.fromDevice.firstCall.args[1].severity).to.equal('warning');
                     done();
                 });
+            });
+        });
+
+        it('drops an alert from a device with a bad token', function(done) {
+            handler.handleMessage('devices/d1/alerts', json({token: 'wrong', message: 'x'}), function() {
+                expect(alerts.fromDevice.called).to.equal(false);
+                done();
             });
         });
     });

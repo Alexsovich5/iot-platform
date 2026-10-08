@@ -14,7 +14,10 @@ var config = require('config');
 var MQTTHandler = require('./mqtt_handler');
 var createApp = require('./app');
 var Presence = require('./lib/presence');
+var AlertService = require('./lib/alerts');
 var Device = require('./models/device');
+var Rule = require('./models/rule');
+var Alert = require('./models/alert');
 var socket = require('./socket');
 
 function configValue(key, fallback) {
@@ -86,12 +89,16 @@ function start(opts, cb) {
         mongoose.connection.once('open', startPresence);
     }
 
+    var alertService = new AlertService({Alert: Alert, Rule: Rule, io: io});
+
     var mqttHandler = new MQTTHandler(mqttConfig, io, {
+        alerts: alertService,
         provisioningKey: opts.provisioningKey !== undefined ?
             opts.provisioningKey : configValue('provisioning.key', '')
     });
     var app = createApp({
         mqttHandler: mqttHandler,
+        alertService: alertService,
         stats: mqttHandler.stats.bind(mqttHandler)
     });
     server.on('request', app);
