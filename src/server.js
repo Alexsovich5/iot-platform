@@ -16,9 +16,12 @@ var createApp = require('./app');
 var Presence = require('./lib/presence');
 var AlertService = require('./lib/alerts');
 var Notifier = require('./lib/notifier');
+var FirmwareService = require('./lib/firmware').FirmwareService;
 var Device = require('./models/device');
 var Rule = require('./models/rule');
 var Alert = require('./models/alert');
+var Firmware = require('./models/firmware');
+var FirmwareUpdate = require('./models/firmware_update');
 var socket = require('./socket');
 
 function configValue(key, fallback) {
@@ -37,7 +40,7 @@ function resolveBaseUrl(opts, port) {
 
 // start(opts, cb) boots the platform. Overrides:
 //   port, mongoUri, mqtt, provisioningKey, publicBaseUrl, webhookUrl
-// cb(err, {server, port, baseUrl, mqttHandler, presence, close})
+// cb(err, {server, port, baseUrl, mqttHandler, firmwareService, presence, close})
 function start(opts, cb) {
     if (typeof opts === 'function') {
         cb = opts;
@@ -100,17 +103,30 @@ function start(opts, cb) {
         provisioningKey: opts.provisioningKey !== undefined ?
             opts.provisioningKey : configValue('provisioning.key', '')
     });
+    var port = opts.port !== undefined ? opts.port : configValue('server.port', 3000);
+
+    // The base URL depends on the bound port, so it is set again in the
+    // listen callback below.
+    var firmwareService = new FirmwareService({
+        FirmwareUpdate: FirmwareUpdate,
+        Device: Device,
+        Firmware: Firmware,
+        mqttHandler: mqttHandler,
+        io: io,
+        baseUrl: resolveBaseUrl(opts, port)
+    });
+    mqttHandler.firmware = firmwareService;
+
     var app = createApp({
         mqttHandler: mqttHandler,
         alertService: alertService,
+        firmwareService: firmwareService,
         stats: mqttHandler.stats.bind(mqttHandler)
     });
     server.on('request', app);
 
     mqttHandler.connect();
     socket.attach(io, mqttHandler, Device);
-
-    var port = opts.port !== undefined ? opts.port : configValue('server.port', 3000);
 
     function close(done) {
         done = done || function() {};
@@ -129,11 +145,14 @@ function start(opts, cb) {
     server.listen(port, function() {
         server.removeListener('error', cb);
         var boundPort = server.address().port;
+        var baseUrl = resolveBaseUrl(opts, boundPort);
+        firmwareService.baseUrl = baseUrl;
         cb(null, {
             server: server,
             port: boundPort,
-            baseUrl: resolveBaseUrl(opts, boundPort),
+            baseUrl: baseUrl,
             mqttHandler: mqttHandler,
+            firmwareService: firmwareService,
             presence: presence,
             close: close
         });

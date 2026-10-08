@@ -293,6 +293,68 @@ describe('MQTTHandler', function() {
         });
     });
 
+    describe('firmware progress', function() {
+        var firmware;
+
+        beforeEach(function() {
+            firmware = {handleProgress: sinon.stub().yields(null, {})};
+            handler.firmware = firmware;
+        });
+
+        it('passes an authenticated progress report to the firmware service', function(done) {
+            var payload = {token: TOKEN, updateId: 'abc', state: 'downloading'};
+            handler.handleMessage('devices/d1/firmware', json(payload), function() {
+                expect(firmware.handleProgress.calledOnce).to.equal(true);
+                var args = firmware.handleProgress.firstCall.args;
+                expect(args[0]).to.equal('d1');
+                expect(args[1]).to.deep.equal({updateId: 'abc', state: 'downloading', error: undefined});
+                done();
+            });
+        });
+
+        it('drops a progress report with a bad token', function(done) {
+            handler.handleMessage('devices/d1/firmware', json({token: 'wrong', updateId: 'abc', state: 'success'}), function() {
+                expect(firmware.handleProgress.called).to.equal(false);
+                expect(handler.rejectedCount).to.equal(1);
+                done();
+            });
+        });
+
+        it('still completes when the service rejects the report', function(done) {
+            firmware.handleProgress.yields(new Error('Invalid transition'));
+            handler.handleMessage('devices/d1/firmware', json({token: TOKEN, updateId: 'abc', state: 'success'}), done);
+        });
+
+        it('processes reports from one device in arrival order', function(done) {
+            // The first lookup is slower than the second, so without
+            // per-device ordering the second report would be handled first.
+            var delays = [30, 0, 0];
+            Device.findOne = function(query, fields, cb) {
+                setTimeout(function() {
+                    cb(null, storedDevice);
+                }, delays.shift());
+            };
+            var seen = [];
+            firmware.handleProgress = function(deviceId, payload, cb) {
+                seen.push(payload.state);
+                setTimeout(function() {
+                    cb(null, {});
+                }, 5);
+            };
+            var remaining = 3;
+            function finished() {
+                remaining -= 1;
+                if (remaining === 0) {
+                    expect(seen).to.deep.equal(['downloading', 'installing', 'success']);
+                    done();
+                }
+            }
+            ['downloading', 'installing', 'success'].forEach(function(state) {
+                handler.handleMessage('devices/d1/firmware', json({token: TOKEN, updateId: 'abc', state: state}), finished);
+            });
+        });
+    });
+
     describe('registration', function() {
         it('publishes {error} for a wrong provisioning key and creates nothing', function(done) {
             handler.connect();

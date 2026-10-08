@@ -1,8 +1,10 @@
 /**
- * Firmware registry routes: upload and list. Mounted at /api/firmware by
- * routes/api.js. Binaries are written to the directory in the app setting
- * 'firmwareDir' as <deviceType>/<version>.bin; the size and MD5 go into
- * the Firmware collection.
+ * Firmware routes: registry upload and listing, rollouts and update
+ * tracking. Mounted at /api/firmware by routes/api.js, which also mounts
+ * startForDevice at POST /api/devices/:id/firmware. Binaries are written
+ * to the directory in the app setting 'firmwareDir' as
+ * <deviceType>/<version>.bin; the size and MD5 go into the Firmware
+ * collection. Updates go through the app setting 'firmwareService'.
  */
 
 'use strict';
@@ -14,6 +16,9 @@ var express = require('express');
 var bodyParser = require('body-parser');
 var Firmware = require('../models/firmware');
 var Device = require('../models/device');
+var FirmwareUpdate = require('../models/firmware_update');
+var DEVICE_ID_RE = require('../lib/ids').DEVICE_ID_RE;
+var STATES = require('../lib/firmware').STATES;
 
 var router = express.Router();
 
@@ -59,6 +64,109 @@ function ensureDir(dir, cb) {
 function duplicate(res) {
     res.status(409).json({error: 'Firmware version already exists for this device type'});
 }
+
+// Sends a service error with its status, or passes it on as a 500.
+function serviceError(err, res, next) {
+    if (err.status) {
+        return res.status(err.status).json({error: err.message});
+    }
+    next(err);
+}
+
+function firmwareService(req, res) {
+    var service = req.app.get('firmwareService');
+    if (!service) {
+        res.status(503).json({error: 'Firmware updates are not available'});
+    }
+    return service;
+}
+
+// POST /api/devices/:id/firmware {version}: update one device to a stored
+// image for its device type.
+function startForDevice(req, res, next) {
+    var deviceId = req.params.id;
+    var version = (req.body || {}).version;
+    if (!DEVICE_ID_RE.test(deviceId)) {
+        return res.status(400).json({error: 'Invalid deviceId'});
+    }
+    if (!isVersion(version)) {
+        return res.status(400).json({error: 'version must look like 1.2.3'});
+    }
+    var service = firmwareService(req, res);
+    if (!service) {
+        return;
+    }
+    Device.findOne({deviceId: deviceId}, 'deviceId type status firmware', function(err, device) {
+        if (err) {
+            return next(err);
+        }
+        if (!device) {
+            return res.status(404).json({error: 'Device not found'});
+        }
+        if (device.status === 'decommissioned') {
+            return res.status(409).json({error: 'Device is decommissioned'});
+        }
+        Firmware.findOne({version: version, deviceType: device.type}, function(fwErr, firmware) {
+            if (fwErr) {
+                return next(fwErr);
+            }
+            if (!firmware) {
+                return res.status(404).json({error: 'Firmware not found for this device type'});
+            }
+            service.startUpdate(device, firmware, function(startErr, update) {
+                if (startErr) {
+                    return serviceError(startErr, res, next);
+                }
+                res.status(202).json(update);
+            });
+        });
+    });
+}
+
+// GET /api/firmware/updates?deviceId=&state=
+router.get('/updates', function(req, res, next) {
+    var query = {};
+    if (req.query.deviceId !== undefined) {
+        if (typeof req.query.deviceId !== 'string' || !DEVICE_ID_RE.test(req.query.deviceId)) {
+            return res.status(400).json({error: 'Invalid deviceId'});
+        }
+        query.deviceId = req.query.deviceId;
+    }
+    if (req.query.state !== undefined) {
+        if (STATES.indexOf(req.query.state) === -1) {
+            return res.status(400).json({error: 'Invalid state'});
+        }
+        query.state = req.query.state;
+    }
+    FirmwareUpdate.find(query).sort({createdAt: -1}).limit(500).exec(function(err, updates) {
+        if (err) {
+            return next(err);
+        }
+        res.json({updates: updates});
+    });
+});
+
+// POST /api/firmware/:deviceType/:version/rollout
+router.post('/:deviceType/:version/rollout', function(req, res, next) {
+    var deviceType = req.params.deviceType;
+    var version = req.params.version;
+    if (!isDeviceType(deviceType)) {
+        return res.status(400).json({error: 'Unknown deviceType'});
+    }
+    if (!isVersion(version)) {
+        return res.status(400).json({error: 'version must look like 1.2.3'});
+    }
+    var service = firmwareService(req, res);
+    if (!service) {
+        return;
+    }
+    service.rollout(deviceType, version, function(err, updates) {
+        if (err) {
+            return serviceError(err, res, next);
+        }
+        res.status(202).json({updates: updates});
+    });
+});
 
 router.get('/', function(req, res, next) {
     Firmware.find({}).sort({deviceType: 1, createdAt: -1}).exec(function(err, found) {
@@ -135,5 +243,6 @@ router.post('/', bodyParser.raw({type: 'application/octet-stream', limit: MAX_SI
 router.isDeviceType = isDeviceType;
 router.isVersion = isVersion;
 router.filePath = filePath;
+router.startForDevice = startForDevice;
 
 module.exports = router;

@@ -32,6 +32,12 @@ describe('server.start', function() {
             expect(started.baseUrl).to.equal('http://localhost:' + started.port);
         });
 
+        it('points the firmware service at the bound base URL before calling back', function() {
+            expect(started.firmwareService).to.be.an('object');
+            expect(started.firmwareService.baseUrl).to.equal('http://localhost:' + started.port);
+            expect(started.mqttHandler.firmware).to.equal(started.firmwareService);
+        });
+
         it('exposes the MQTT handler', function() {
             expect(started.mqttHandler).to.be.an('object');
             expect(started.mqttHandler.isConnected).to.be.a('function');

@@ -423,12 +423,12 @@ and MD5 recorded so devices can verify what they download.
 - create `src/models/firmware_update.js`.
 - create `src/lib/firmware.js`:
   - `canAdvance(from, to)` enforces the order `pending → downloading → installing → success|failed`. `failed` is reachable from any non-terminal state.
-  - `FirmwareService({FirmwareUpdate, Device, mqttHandler, io, baseUrl})`. `baseUrl` is injected and stored as the public property `this.baseUrl`, not read from the frozen config inside the module. `src/server.js` constructs the service before `listen` with any known value, then in the `listen` callback sets `firmwareService.baseUrl` to the base URL resolved as in T2 (so with `port: 0` and no `publicBaseUrl` it becomes `http://localhost:<bound port>`) before `start` calls back.
+  - `FirmwareService({FirmwareUpdate, Device, Firmware?, mqttHandler, io, baseUrl})`. `Firmware` (the registry model, used by `rollout`) defaults to `src/models/firmware.js`. `baseUrl` is injected and stored as the public property `this.baseUrl`, not read from the frozen config inside the module. `src/server.js` constructs the service before `listen` with any known value, then in the `listen` callback sets `firmwareService.baseUrl` to the base URL resolved as in T2 (so with `port: 0` and no `publicBaseUrl` it becomes `http://localhost:<bound port>`) before `start` calls back.
   - `startUpdate(device, firmware, cb)` creates the record and publishes a `firmware_update` command whose URL is `this.baseUrl + '/firmware/<type>/<version>.bin'`, read at call time, so a later assignment takes effect.
   - `rollout(deviceType, version, cb)` targets all non-decommissioned devices of that type that are not already on that version.
   - `handleProgress(deviceId, payload, cb)` validates the transition, appends to `history`, sets `device.firmware` on success, and emits `firmware`.
 - modify `src/routes/firmware.js`: add `POST /api/devices/:id/firmware`, `POST /api/firmware/:deviceType/:version/rollout` and `GET /api/firmware/updates`.
-- modify `src/mqtt_handler.js` to route `devices/+/firmware` (authenticated) to `firmware.handleProgress`.
+- modify `src/mqtt_handler.js` to route `devices/+/firmware` (authenticated) to `firmware.handleProgress`. The service is the handler's `firmware` property (assignable after construction), and firmware reports from one device are processed one at a time in arrival order, so back-to-back `downloading`, `installing`, `success` reports are not reordered by concurrent token lookups.
 
 **Tests to write first:**
 - `test/unit/firmware.test.js`: a transition table in which success → downloading is rejected, updateIds that don't belong to the device are rejected, and the command payload contains the url and md5. After `service.baseUrl = 'http://localhost:4567'` is assigned post-construction, the next command URL starts with `http://localhost:4567/firmware/`.

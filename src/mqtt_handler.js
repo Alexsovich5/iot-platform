@@ -59,12 +59,15 @@ function MQTTHandler(mqttConfig, io, deps) {
     this.provisioningKey = deps.provisioningKey !== undefined ?
         deps.provisioningKey : configValue('provisioning.key', '');
     this.alerts = deps.alerts || null;
-    this.onFirmware = deps.onFirmware || noop;
+    // Firmware service ({handleProgress}); may also be assigned after
+    // construction, since the service itself needs this handler.
+    this.firmware = deps.firmware || null;
     this.maxTelemetryPoints = deps.maxTelemetryPoints || configValue('telemetry.maxPoints', 1000);
 
     this.client = null;
     this.connected = false;
     this.rejectedCount = 0;
+    this._firmwareQueues = {};
 }
 
 // connect(cb): cb runs once the first connection's subscriptions are acked.
@@ -144,6 +147,18 @@ MQTTHandler.prototype.handleMessage = function(topic, message, done) {
         return this._handleRegistration(parsed.deviceId, payload, done);
     }
 
+    // Firmware progress reports are applied one at a time per device, in
+    // arrival order: each one is only valid after the previous state.
+    if (parsed.type === 'firmware') {
+        var handler = this;
+        return this._serialize(parsed.deviceId, function(next) {
+            handler._route(parsed, payload, next);
+        }, done);
+    }
+    this._route(parsed, payload, done);
+};
+
+MQTTHandler.prototype._route = function(parsed, payload, done) {
     var self = this;
     this._authenticate(parsed.deviceId, payload.token, function(err, device) {
         if (err || !device) {
@@ -157,7 +172,7 @@ MQTTHandler.prototype.handleMessage = function(topic, message, done) {
             case 'alerts':
                 return self._handleAlert(device, payload, done);
             case 'firmware':
-                return self.onFirmware(device, payload, done);
+                return self._handleFirmware(device, payload, done);
         }
         done();
     });
@@ -283,6 +298,46 @@ MQTTHandler.prototype._handleAlert = function(device, data, done) {
         }
         done();
     });
+};
+
+MQTTHandler.prototype._handleFirmware = function(device, data, done) {
+    if (!this.firmware) {
+        return process.nextTick(done);
+    }
+    this.firmware.handleProgress(device.deviceId, {
+        updateId: data.updateId,
+        state: data.state,
+        error: data.error
+    }, function(err) {
+        if (err) {
+            console.error('Firmware progress from', device.deviceId, 'rejected:', err.message);
+        }
+        done();
+    });
+};
+
+// Runs task(next) after every earlier task queued under `key` has called
+// next, then calls done.
+MQTTHandler.prototype._serialize = function(key, task, done) {
+    var queues = this._firmwareQueues;
+    var queue = queues[key] || (queues[key] = []);
+    queue.push({task: task, done: done});
+    if (queue.length > 1) {
+        return;
+    }
+    function run() {
+        var item = queue[0];
+        item.task(function() {
+            queue.shift();
+            if (queue.length === 0) {
+                delete queues[key];
+            } else {
+                process.nextTick(run);
+            }
+            item.done();
+        });
+    }
+    run();
 };
 
 MQTTHandler.prototype._handleRegistration = function(deviceId, data, done) {

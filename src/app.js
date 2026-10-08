@@ -55,6 +55,7 @@ function createApp(options) {
     app.set('Rule', options.Rule || require('./models/rule'));
     app.set('Alert', options.Alert || require('./models/alert'));
     app.set('firmwareDir', options.firmwareDir || defaultFirmwareDir());
+    app.set('firmwareService', options.firmwareService || null);
 
     app.use(bodyParser.json({limit: '100kb'}));
     app.use(express.static(path.join(__dirname, '..', 'public')));

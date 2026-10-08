@@ -13,6 +13,7 @@ var firmware = require('./firmware');
 
 var router = express.Router();
 
+router.post('/devices/:id/firmware', firmware.startForDevice);
 router.use('/devices', devices);
 router.use('/rules', rules);
 router.use('/alerts', alerts);
