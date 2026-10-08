@@ -44,7 +44,7 @@ function setupSocketIO(io, mqttHandler) {
 }
 
 // start(opts, cb) boots the platform. Overrides:
-//   port, mongoUri, mqtt, publicBaseUrl, webhookUrl
+//   port, mongoUri, mqtt, provisioningKey, publicBaseUrl, webhookUrl
 // cb(err, {server, port, baseUrl, mqttHandler, close})
 function start(opts, cb) {
     if (typeof opts === 'function') {
@@ -79,12 +79,13 @@ function start(opts, cb) {
     var server = http.createServer();
     var io = socketIO(server);
 
-    var mqttHandler = new MQTTHandler(mqttConfig, io);
+    var mqttHandler = new MQTTHandler(mqttConfig, io, {
+        provisioningKey: opts.provisioningKey !== undefined ?
+            opts.provisioningKey : configValue('provisioning.key', '')
+    });
     var app = createApp({
         mqttHandler: mqttHandler,
-        stats: function() {
-            return {rejectedMessages: 0};
-        }
+        stats: mqttHandler.stats.bind(mqttHandler)
     });
     server.on('request', app);
 

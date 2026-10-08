@@ -50,6 +50,21 @@ describe('server.start', function() {
                 });
         });
 
+        it('reports the MQTT handler rejection count in /health', function(done) {
+            started.mqttHandler.rejectedCount = 2;
+            request(started.baseUrl)
+                .get('/health')
+                .expect(200)
+                .end(function(err, res) {
+                    started.mqttHandler.rejectedCount = 0;
+                    if (err) {
+                        return done(err);
+                    }
+                    expect(res.body.rejectedMessages).to.equal(2);
+                    done();
+                });
+        });
+
         it('returns 400 JSON for a malformed JSON body', function(done) {
             request(started.baseUrl)
                 .put('/api/devices/abc')
