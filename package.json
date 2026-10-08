@@ -10,10 +10,10 @@
   "scripts": {
     "start": "node src/server.js",
     "simulate": "node bin/simulate-devices.js",
-    "test": "mocha test/support/root_hooks.js test/unit test/integration",
-    "test:unit": "SKIP_SERVICES=1 mocha test/unit",
+    "test": "mocha --require test/setup-babel.js test/support/root_hooks.js test/unit test/integration",
+    "test:unit": "SKIP_SERVICES=1 mocha --require test/setup-babel.js test/unit",
     "lint": "eslint src bin test",
-    "build": "echo no bundle yet"
+    "build": "browserify src/frontend/index.jsx --extension=.jsx -t babelify -o public/js/bundle.js"
   },
   "dependencies": {
     "babel-core": "6.5.2",

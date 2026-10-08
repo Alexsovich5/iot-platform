@@ -1,0 +1,110 @@
+body {
+    margin: 0;
+    font-family: Georgia, "Times New Roman", serif;
+    background: #f4f1ea;
+    color: #222;
+}
+
+.dashboard {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+h1 {
+    font-size: 24px;
+    margin: 0 0 16px;
+}
+
+.stats-bar {
+    display: flex;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.stat {
+    background: #fff;
+    border: 1px solid #d8d2c4;
+    padding: 8px 12px;
+    margin: 0 8px 8px 0;
+}
+
+.stat-label {
+    display: block;
+    font-size: 12px;
+    text-transform: uppercase;
+    color: #666;
+}
+
+.stat-value {
+    font-size: 22px;
+    font-weight: bold;
+}
+
+.filters label {
+    margin-right: 16px;
+    font-size: 14px;
+}
+
+.filters select {
+    margin-left: 6px;
+}
+
+.main {
+    display: flex;
+    flex-wrap: wrap;
+    margin-top: 16px;
+}
+
+.device-list {
+    flex: 1 1 320px;
+}
+
+.device-card {
+    background: #fff;
+    border: 1px solid #d8d2c4;
+    border-left: 6px solid #999;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+}
+
+.device-card h3 {
+    margin: 0 0 4px;
+    font-size: 16px;
+}
+
+.device-card .device-type {
+    margin-left: 8px;
+    color: #666;
+}
+
+.device-card.selected {
+    background: #fffbe8;
+}
+
+.device-card.online { border-left-color: #2e7d32; }
+.device-card.offline { border-left-color: #b71c1c; }
+.device-card.registered { border-left-color: #616161; }
+.device-card.maintenance { border-left-color: #e65100; }
+.device-card.decommissioned { border-left-color: #000; opacity: 0.6; }
+
+.live-panel {
+    flex: 1 1 320px;
+    background: #fff;
+    border: 1px solid #d8d2c4;
+    padding: 12px;
+    margin-left: 16px;
+}
+
+.live-latest dt {
+    font-weight: bold;
+}
+
+.live-latest dd {
+    margin: 0 0 6px;
+}
+
+.muted {
+    color: #888;
+}
