@@ -7,13 +7,14 @@
 
 'use strict';
 
+var crypto = require('crypto');
 var mqtt = require('mqtt');
 var Device = require('./models/device');
 
 function MQTTHandler(config, io) {
     this.brokerUrl = 'mqtt://' + config.host + ':' + config.port;
     this.options = {
-        clientId: 'iot-platform-' + Date.now(),
+        clientId: 'iot-platform-' + crypto.randomBytes(6).toString('hex'),
         username: config.username || '',
         password: config.password || '',
         keepalive: 60,
@@ -205,6 +206,19 @@ MQTTHandler.prototype.sendCommand = function(deviceId, command, payload) {
 
 MQTTHandler.prototype.isConnected = function() {
     return this.connected;
+};
+
+MQTTHandler.prototype.close = function(callback) {
+    callback = callback || function() {};
+    var client = this.client;
+    this.client = null;
+    this.connected = false;
+    if (!client) {
+        return process.nextTick(callback);
+    }
+    client.end(true, function() {
+        callback();
+    });
 };
 
 module.exports = MQTTHandler;

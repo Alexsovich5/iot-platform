@@ -1,0 +1,19 @@
+{
+  "mongodb": {
+    "uri": "MONGO_URI"
+  },
+  "mqtt": {
+    "host": "MQTT_HOST",
+    "port": "MQTT_PORT"
+  },
+  "provisioning": {
+    "key": "PROVISIONING_KEY"
+  },
+  "alerts": {
+    "webhookUrl": "ALERT_WEBHOOK_URL"
+  },
+  "firmware": {
+    "dir": "FIRMWARE_DIR",
+    "publicBaseUrl": "PUBLIC_BASE_URL"
+  }
+}

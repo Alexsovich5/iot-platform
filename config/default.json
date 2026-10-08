@@ -10,5 +10,22 @@
     "port": 1883,
     "username": "",
     "password": ""
+  },
+  "provisioning": {
+    "key": "change-me"
+  },
+  "presence": {
+    "offlineAfterSec": 120,
+    "sweepIntervalSec": 30
+  },
+  "telemetry": {
+    "maxPoints": 1000
+  },
+  "alerts": {
+    "webhookUrl": ""
+  },
+  "firmware": {
+    "dir": "/data/firmware",
+    "publicBaseUrl": "http://app:3000"
   }
 }

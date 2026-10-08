@@ -1,76 +1,132 @@
 /**
- * IoT Device Management Platform - Main Server
+ * IoT Device Management Platform - server bootstrap.
  *
- * Express server with MQTT integration for device management.
+ * Connects to MongoDB and the MQTT broker, attaches Socket.IO and starts
+ * the HTTP server around the app built by src/app.js.
  */
 
 'use strict';
 
-var express = require('express');
 var http = require('http');
 var mongoose = require('mongoose');
 var socketIO = require('socket.io');
 var config = require('config');
 var MQTTHandler = require('./mqtt_handler');
-var apiRoutes = require('./routes/api');
+var createApp = require('./app');
 
-var app = express();
-var server = http.createServer(app);
-var io = socketIO(server);
+function configValue(key, fallback) {
+    return config.has(key) ? config.get(key) : fallback;
+}
 
-// Middleware
-app.use(express.json());
-app.use(express.static('public'));
-
-// MongoDB connection
-var mongoUri = config.get('mongodb.uri');
-mongoose.connect(mongoUri, function(err) {
-    if (err) {
-        console.error('MongoDB connection error:', err);
-        process.exit(1);
+function resolveBaseUrl(opts, port) {
+    if (opts.publicBaseUrl) {
+        return opts.publicBaseUrl;
     }
-    console.log('Connected to MongoDB');
-});
+    if (opts.port === 0) {
+        return 'http://localhost:' + port;
+    }
+    return configValue('firmware.publicBaseUrl', 'http://localhost:' + port);
+}
 
-// API routes
-app.use('/api', apiRoutes);
+function setupSocketIO(io, mqttHandler) {
+    io.on('connection', function(socket) {
+        socket.on('subscribe_device', function(deviceId) {
+            socket.join('device_' + deviceId);
+        });
 
-// Health check
-app.get('/health', function(req, res) {
-    res.json({
-        status: 'healthy',
-        uptime: process.uptime(),
-        mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-        mqtt: mqttHandler.isConnected() ? 'connected' : 'disconnected'
+        socket.on('send_command', function(data) {
+            if (!data) {
+                return;
+            }
+            mqttHandler.sendCommand(data.deviceId, data.command, data.payload);
+        });
     });
-});
+}
 
-// Initialize MQTT handler
-var mqttHandler = new MQTTHandler(config.get('mqtt'), io);
-mqttHandler.connect();
+// start(opts, cb) boots the platform. Overrides:
+//   port, mongoUri, mqtt, publicBaseUrl, webhookUrl
+// cb(err, {server, port, baseUrl, mqttHandler, close})
+function start(opts, cb) {
+    if (typeof opts === 'function') {
+        cb = opts;
+        opts = {};
+    }
+    opts = opts || {};
+    cb = cb || function() {};
 
-// WebSocket for real-time dashboard updates
-io.on('connection', function(socket) {
-    console.log('Dashboard client connected:', socket.id);
-
-    socket.on('subscribe_device', function(deviceId) {
-        socket.join('device_' + deviceId);
-        console.log('Client subscribed to device:', deviceId);
+    var mqttConfig = {};
+    var baseMqtt = configValue('mqtt', {});
+    Object.keys(baseMqtt).forEach(function(key) {
+        mqttConfig[key] = baseMqtt[key];
     });
-
-    socket.on('send_command', function(data) {
-        mqttHandler.sendCommand(data.deviceId, data.command, data.payload);
+    Object.keys(opts.mqtt || {}).forEach(function(key) {
+        mqttConfig[key] = opts.mqtt[key];
     });
+    mqttConfig.port = parseInt(mqttConfig.port, 10) || 1883;
 
-    socket.on('disconnect', function() {
-        console.log('Dashboard client disconnected:', socket.id);
+    if (mongoose.connection.readyState === 0) {
+        var mongoUri = opts.mongoUri || config.get('mongodb.uri');
+        mongoose.connect(mongoUri, function(err) {
+            if (err) {
+                console.error('MongoDB connection error:', err.message);
+                if (require.main === module) {
+                    process.exit(1);
+                }
+            }
+        });
+    }
+
+    var server = http.createServer();
+    var io = socketIO(server);
+
+    var mqttHandler = new MQTTHandler(mqttConfig, io);
+    var app = createApp({
+        mqttHandler: mqttHandler,
+        stats: function() {
+            return {rejectedMessages: 0};
+        }
     });
-});
+    server.on('request', app);
 
-// Start server
-var port = config.get('server.port') || 3000;
-server.listen(port, function() {
-    console.log('IoT Platform running on port ' + port);
-});
+    mqttHandler.connect();
+    setupSocketIO(io, mqttHandler);
 
-module.exports = app;
+    var port = opts.port !== undefined ? opts.port : configValue('server.port', 3000);
+
+    function close(done) {
+        done = done || function() {};
+        mqttHandler.close(function() {
+            io.engine.close();
+            server.close(function() {
+                done();
+            });
+        });
+    }
+
+    server.once('error', cb);
+    server.listen(port, function() {
+        server.removeListener('error', cb);
+        var boundPort = server.address().port;
+        cb(null, {
+            server: server,
+            port: boundPort,
+            baseUrl: resolveBaseUrl(opts, boundPort),
+            mqttHandler: mqttHandler,
+            close: close
+        });
+    });
+}
+
+module.exports = {
+    start: start
+};
+
+if (require.main === module) {
+    start({}, function(err, result) {
+        if (err) {
+            console.error('Failed to start:', err.message);
+            process.exit(1);
+        }
+        console.log('IoT Platform running on port ' + result.port);
+    });
+}
