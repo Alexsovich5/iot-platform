@@ -1,0 +1,12 @@
+services:
+  test:
+    build: .
+    image: iot-platform:test
+    environment:
+      - NODE_ENV=test
+    depends_on:
+      - mongo
+      - mosquitto
+    command: ["npm", "test"]
+    networks:
+      - default

@@ -1,0 +1,8 @@
+{
+  "mongodb": {
+    "uri": "mongodb://mongo:27017/iot-platform-test"
+  },
+  "mqtt": {
+    "host": "mosquitto"
+  }
+}

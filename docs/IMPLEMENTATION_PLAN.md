@@ -37,6 +37,7 @@ Conventions used by every task:
   - Mount `docker/mosquitto/mosquitto.conf` to `/mosquitto/config/mosquitto.conf`.
   - Drop port 9001, and drop the host port mappings `27017:27017` and `1883:1883` (anyone who wants host access can add them in an untracked `docker-compose.override.yml`).
   - Add environment variables `MONGO_URI=mongodb://mongo:27017/iot-platform` and `MQTT_HOST=mosquitto`.
+  - Set the top-level `name: iot-platform` (the obsolete `version:` key is dropped), tag the built images `iot-platform:app`, `iot-platform:mongo` and `iot-platform:test`, publish the app on host port `21000:3000` instead of `3000:3000`, and pin the default network to subnet `172.50.0.0/24`, so the stack does not collide with other compose projects on the same Docker host.
 
 **Tests to write first:**
 - `sanity.test.js`: `process.version` equals `v4.3.1`. Every pinned dependency in `package.json` resolves with `require.resolve`.
