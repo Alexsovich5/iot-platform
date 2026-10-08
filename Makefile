@@ -3,7 +3,7 @@ export DOCKER_DEFAULT_PLATFORM := linux/amd64
 COMPOSE ?= docker compose
 TEST_COMPOSE = $(COMPOSE) -f docker-compose.yml -f docker-compose.test.yml
 
-.PHONY: build test test-unit lint up down smoke shrinkwrap
+.PHONY: build test test-unit lint up down smoke readme-check shrinkwrap
 
 build:
 	$(COMPOSE) build
@@ -28,6 +28,10 @@ down:
 
 smoke:
 	COMPOSE="$(COMPOSE)" sh scripts/smoke.sh; status=$$?; $(COMPOSE) down -v; exit $$status
+
+readme-check:
+	git ls-files --cached --others --exclude-standard | \
+	  $(TEST_COMPOSE) run --rm --no-deps -T -v "$(CURDIR)":/usr/src/app test node scripts/layout_tree.js --check README.md
 
 shrinkwrap:
 	docker run --rm -v "$(CURDIR)":/app -w /app node:10 sh -c \
