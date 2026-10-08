@@ -8,10 +8,12 @@ var request = require('supertest');
 var createApp = require('../../src/app');
 var MQTTHandler = require('../../src/mqtt_handler');
 var AlertService = require('../../src/lib/alerts');
+var Notifier = require('../../src/lib/notifier');
 var Alert = require('../../src/models/alert');
 var Rule = require('../../src/models/rule');
 var FakeIo = require('../support/fake_io');
 var db = require('../support/db');
+var WebhookStub = require('../support/webhook_stub');
 
 function brokerUrl() {
     return 'mqtt://' + config.get('mqtt.host') + ':' + (parseInt(config.get('mqtt.port'), 10) || 1883);
@@ -41,6 +43,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
     this.timeout(15000);
 
     var io;
+    var stub;
     var alertService;
     var handler;
     var app;
@@ -62,8 +65,18 @@ describe('alerts flow (real broker and MongoDB)', function() {
     });
 
     before(function(done) {
+        stub = new WebhookStub();
+        stub.start(done);
+    });
+
+    before(function(done) {
         io = new FakeIo();
-        alertService = new AlertService({Alert: Alert, Rule: Rule, io: io});
+        alertService = new AlertService({
+            Alert: Alert,
+            Rule: Rule,
+            io: io,
+            notifier: new Notifier({url: stub.url, timeoutMs: 2000})
+        });
         handler = new MQTTHandler({host: config.get('mqtt.host'), port: config.get('mqtt.port')}, io, {
             provisioningKey: 'alerts-test-key',
             alerts: alertService
@@ -85,7 +98,9 @@ describe('alerts flow (real broker and MongoDB)', function() {
 
     after(function(done) {
         client.end(false, function() {
-            handler.close(done);
+            handler.close(function() {
+                stub.close(done);
+            });
         });
     });
 
@@ -156,6 +171,23 @@ describe('alerts flow (real broker and MongoDB)', function() {
         });
     });
 
+    it('POSTs the fired rule alert to the webhook once', function(done) {
+        stub.waitForRequests(1, function() {
+            expect(stub.requests).to.have.length(1);
+            var req = stub.requests[0];
+            expect(req.method).to.equal('POST');
+            expect(req.headers['content-type']).to.equal('application/json');
+            var body = JSON.parse(req.body);
+            expect(body.alert.deviceId).to.equal(deviceId);
+            expect(body.alert.source).to.equal('rule');
+            expect(body.alert.metric).to.equal('temperature');
+            expect(body.alert.value).to.equal(35);
+            expect(body.alert.threshold).to.equal(30);
+            expect(body.alert._id).to.be.a('string');
+            done();
+        });
+    });
+
     it('acknowledges the alert', function(done) {
         listAlerts({acknowledged: 'false'}, function(err, body) {
             if (err) {
@@ -212,7 +244,10 @@ describe('alerts flow (real broker and MongoDB)', function() {
             expect(deviceAlerts[0].severity).to.equal('info');
             expect(deviceAlerts[0].ruleId).to.equal(null);
             expect(io.emittedTo(null, 'alert')).to.have.length(2);
-            done();
+            stub.waitForRequests(2, function() {
+                expect(JSON.parse(stub.requests[1].body).alert.source).to.equal('device');
+                done();
+            });
         });
     });
 

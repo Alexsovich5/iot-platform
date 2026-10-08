@@ -15,6 +15,7 @@ var MQTTHandler = require('./mqtt_handler');
 var createApp = require('./app');
 var Presence = require('./lib/presence');
 var AlertService = require('./lib/alerts');
+var Notifier = require('./lib/notifier');
 var Device = require('./models/device');
 var Rule = require('./models/rule');
 var Alert = require('./models/alert');
@@ -89,7 +90,10 @@ function start(opts, cb) {
         mongoose.connection.once('open', startPresence);
     }
 
-    var alertService = new AlertService({Alert: Alert, Rule: Rule, io: io});
+    var notifier = new Notifier({
+        url: opts.webhookUrl !== undefined ? opts.webhookUrl : configValue('alerts.webhookUrl', '')
+    });
+    var alertService = new AlertService({Alert: Alert, Rule: Rule, io: io, notifier: notifier});
 
     var mqttHandler = new MQTTHandler(mqttConfig, io, {
         alerts: alertService,

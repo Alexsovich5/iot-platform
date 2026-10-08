@@ -61,7 +61,9 @@ AlertService.prototype._save = function(doc, cb) {
         }
         self.io.emit('alert', {alert: alert});
         if (self.notifier) {
-            self.notifier.notify(alert);
+            // Fire and forget: the notifier logs its own failures and
+            // persistence never waits for the webhook.
+            self.notifier.notify(alert, function() {});
         }
         cb(null, alert);
     });
