@@ -1,13 +1,19 @@
 {
+  "api": {
+    "keyFile": "API_KEY_FILE"
+  },
   "mongodb": {
     "uri": "MONGO_URI"
   },
   "mqtt": {
     "host": "MQTT_HOST",
-    "port": "MQTT_PORT"
+    "port": "MQTT_PORT",
+    "username": "MQTT_USERNAME",
+    "passwordFile": "MQTT_PASSWORD_FILE"
   },
   "provisioning": {
-    "key": "PROVISIONING_KEY"
+    "key": "PROVISIONING_KEY",
+    "keyFile": "PROVISIONING_KEY_FILE"
   },
   "alerts": {
     "webhookUrl": "ALERT_WEBHOOK_URL"

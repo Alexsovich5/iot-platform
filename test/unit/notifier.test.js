@@ -138,4 +138,68 @@ describe('Notifier', function() {
         new Notifier({url: stub.url, log: log}).notify(alert);
         stub.waitForRequests(1, done);
     });
+
+    it('gives up on a receiver that trickles its response past the timeout', function(done) {
+        this.timeout(3000);
+        stub.mode = 'trickle';
+        var started = Date.now();
+        new Notifier({url: stub.url, timeoutMs: 300, log: log}).notify(alert, function(err) {
+            expect(err).to.be.an.instanceof(Error);
+            expect(err.message).to.match(/timed out/);
+            expect(Date.now() - started).to.be.below(1500);
+            done();
+        });
+    });
+
+    describe('secrets in the webhook URL', function() {
+        var SENTINEL = 'S3NTINEL';
+
+        function logged() {
+            return log.args.map(function(args) {
+                return args.join(' ');
+            }).join('\n');
+        }
+
+        function expectNoSentinel(err) {
+            expect(err).to.be.an.instanceof(Error);
+            expect(String(err.message)).to.not.contain(SENTINEL);
+            expect(String(err.stack)).to.not.contain(SENTINEL);
+            expect(log.called).to.equal(true);
+            expect(logged()).to.not.contain(SENTINEL);
+        }
+
+        it('does not log userinfo, path or query of an unsupported URL', function(done) {
+            var url = 'ftp://user:' + SENTINEL + '-pw@files.example.com/' + SENTINEL + '-path?token=' + SENTINEL;
+            new Notifier({url: url, log: log}).notify(alert, function(err) {
+                expectNoSentinel(err);
+                expect(logged()).to.contain('ftp://<redacted>@files.example.com/<redacted>');
+                done();
+            });
+        });
+
+        it('does not log them when the connection is refused', function(done) {
+            var url = 'http://user:' + SENTINEL + '-pw@127.0.0.1:1/hook/' + SENTINEL + '?key=' + SENTINEL;
+            new Notifier({url: url, log: log}).notify(alert, function(err) {
+                expectNoSentinel(err);
+                expect(logged()).to.contain('http://<redacted>@127.0.0.1:1/<redacted>');
+                done();
+            });
+        });
+
+        it('does not log them on an error response or a timeout', function(done) {
+            this.timeout(3000);
+            var base = stub.url.replace('http://', 'http://user:' + SENTINEL + '-pw@');
+            stub.mode = 'error';
+            new Notifier({url: base + '/' + SENTINEL + '?t=' + SENTINEL, log: log}).notify(alert, function(err) {
+                expectNoSentinel(err);
+                expect(stub.requests[0].headers.authorization).to.match(/^Basic /);
+                stub.mode = 'hang';
+                log.reset();
+                new Notifier({url: base + '?t=' + SENTINEL, timeoutMs: 200, log: log}).notify(alert, function(err2) {
+                    expectNoSentinel(err2);
+                    done();
+                });
+            });
+        });
+    });
 });

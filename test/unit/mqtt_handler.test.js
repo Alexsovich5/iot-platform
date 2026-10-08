@@ -106,6 +106,21 @@ describe('MQTTHandler', function() {
                 done();
             });
         });
+
+        // MQTT.js 1.7 waits for a 'close' event in a forced end(); when the
+        // broker already refused the connection the stream is closed and
+        // that event never comes, so the callback would never run.
+        it('calls back after a forced close even when the client never acknowledges it', function(done) {
+            handler.connect();
+            fake.client.end = function(force) {
+                this.ended = true;
+                this.endForce = !!force;
+            };
+            handler.close(function() {
+                expect(fake.client.endForce).to.equal(true);
+                done();
+            });
+        });
     });
 
     describe('inbound validation', function() {

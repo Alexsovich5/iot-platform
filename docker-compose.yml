@@ -1,23 +1,44 @@
 name: iot-platform
 
 services:
+  # One-shot job: creates the broker passwords and the provisioning key in
+  # the secrets volume on first start and writes the Mosquitto password file.
+  secrets:
+    image: eclipse-mosquitto:1.4.8
+    entrypoint: ["sh", "/init.sh"]
+    volumes:
+      - ./docker/secrets/init.sh:/init.sh:ro
+      - secrets:/secrets
+    networks:
+      - default
+
   app:
     build: .
     image: iot-platform:app
     ports:
-      - "21000:3000"
+      - "127.0.0.1:21000:3000"
     depends_on:
-      - mongo
-      - mosquitto
+      secrets:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_started
+      mosquitto:
+        condition: service_started
     environment:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/iot-platform
       - MQTT_HOST=mosquitto
+      - MQTT_USERNAME=platform
+      - MQTT_PASSWORD_FILE=/secrets/mqtt_platform_password
+      - MQTT_DEVICE_USERNAME=device
+      - MQTT_DEVICE_PASSWORD_FILE=/secrets/mqtt_device_password
+      - PROVISIONING_KEY_FILE=/secrets/provisioning_key
+      - API_KEY_FILE=/secrets/api_key
       - FIRMWARE_DIR=/data/firmware
-      - PROVISIONING_KEY=${PROVISIONING_KEY:-local-dev-provisioning-key}
       - PUBLIC_BASE_URL=http://app:3000
     volumes:
       - firmware_data:/data/firmware
+      - secrets:/secrets
     networks:
       - default
 
@@ -31,8 +52,13 @@ services:
 
   mosquitto:
     image: eclipse-mosquitto:1.4.8
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
     volumes:
       - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docker/mosquitto/acl:/mosquitto/config/acl:ro
+      - secrets:/secrets:ro
     networks:
       - default
 
@@ -45,3 +71,4 @@ networks:
 volumes:
   mongo_data:
   firmware_data:
+  secrets:

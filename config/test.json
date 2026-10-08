@@ -3,7 +3,12 @@
     "uri": "mongodb://mongo:27017/iot-platform-test"
   },
   "mqtt": {
-    "host": "mosquitto"
+    "host": "mosquitto",
+    "username": "platform",
+    "passwordFile": "/secrets/mqtt_platform_password"
+  },
+  "api": {
+    "keyFile": "/tmp/iot-platform-test/api_key"
   },
   "firmware": {
     "dir": "/tmp/firmware-test"

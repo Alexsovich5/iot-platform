@@ -1,6 +1,6 @@
 # iot-platform — Implementation Plan
 
-This plan implements `docs/SPEC.md` in 18 tasks, T1 to T18. Each task is exactly one commit and leaves `make test` green. The tasks are dependency-ordered.
+This plan implements `docs/SPEC.md` in 19 tasks, T1 to T19. Each task is exactly one commit and leaves `make test` green. The tasks are dependency-ordered.
 
 Conventions used by every task:
 
@@ -614,3 +614,40 @@ Rewrite README from template with honest status and layout
 Describe exactly what is implemented and tested, name the simulated
 devices and webhook stub, and generate the layout from git ls-files.
 ```
+
+---
+
+## T19 — Security and hygiene hardening
+
+**Goal:** Close the gaps found in a whole-repository security and hygiene review, with a failing test first for each fix.
+
+**Found and changed:**
+- *Unauthenticated operator API (blocker).* Anyone who could reach the port could create devices (and receive their tokens), decommission devices and upload or roll out firmware. New `src/lib/api_auth.js`: every `/api` route requires `Authorization: Bearer <key>`, compared through SHA-256 hashes in constant time (`tokens.verify`); missing, wrong or non-Bearer keys get `401` with `WWW-Authenticate: Bearer`, before any body is parsed. `createApp` refuses to build without `apiKey`. New `src/lib/secrets.js`: `loadOrCreateKey` creates a random 64-hex key at first start in `api.keyFile` (`/secrets/api_key`, mode 0600, never logged); `server.start` accepts an `apiKey` override for tests.
+- *Unauthenticated Socket.IO (blocker).* `send_command` and live telemetry were open to any client. `socket.authorize(apiKey)` is installed with `io.use` and admits only handshakes carrying the key (`apiKey` query parameter or Bearer header).
+- *Dashboard.* New `KeyPrompt` component and `src/frontend/lib/api.js`: the dashboard asks for the key, keeps it in `sessionStorage` only, sends it on every fetch and on the Socket.IO handshake, and forgets it on a 401 or a refused socket.
+- *Anonymous broker (blocker).* Any network client could read `devices/+/provisioned` (tokens as they are issued) and publish commands to devices. `mosquitto.conf` now has `allow_anonymous false`, a password file and `docker/mosquitto/acl`. A one-shot `secrets` compose service (`docker/secrets/init.sh` in the `eclipse-mosquitto:1.4.8` image) generates the `platform` and `device` passwords and the provisioning key into the `secrets` volume on first start and rebuilds the password file; `app`, `mosquitto` and `test` wait for it (`service_completed_successfully`). Devices connect with their device ID as client ID; ACL `pattern` rules (`%c`) limit them to their own topics. The committed default provisioning key (`local-dev-provisioning-key`) is gone; the app reads `PROVISIONING_KEY_FILE`.
+- *Published port.* The app is published on `127.0.0.1:21000` only.
+- *Secrets in logs (major).* `Notifier` logged `'unsupported webhook URL ' + url`, exposing userinfo and path/query tokens. New `src/lib/redact.js` (`redactUrl`); the notifier logs only the redacted URL and rebuilds connection-error messages from the error code.
+- *Health reported healthy while degraded (major).* `/health` always said `healthy`. It now answers `200 healthy` only when MongoDB and MQTT are both connected and `503 degraded` otherwise, so `make smoke` waits for a really usable stack.
+- *Shutdown hang (major).* With MQTT.js 1.7.3 a forced `end(true, cb)` on a stream the broker has already closed (for example after refusing credentials) never calls back, so `MQTTHandler.close` and `server.close` hung. Forced ends now call back immediately; `SimDevice.stop` had the same problem and the same fix.
+- *Unbounded firmware download in the simulator (minor).* `SimDevice` read the whole body with only an inactivity timeout. It now aborts above `maxDownloadBytes` (10 MB, the registry limit) or after `downloadTimeoutMs` (15 s) in total. The notifier's timeout also covers the whole exchange now, so a trickling webhook receiver cannot hold it open.
+- *Simulator credentials.* `bin/simulate-devices.js` gains `--username`, `--password-file` and `--key-file` (defaults from `MQTT_DEVICE_USERNAME`, `MQTT_DEVICE_PASSWORD_FILE`, `PROVISIONING_KEY_FILE`); there is deliberately no flag that takes a password on the command line.
+- No era-performing comments, fabricated claims, AI mentions, `@author` tags or leftover debug code were found.
+
+**Tests written first:**
+- `test/unit/api_auth.test.js`: every `/api` route (19 plus an unknown path) answers 401 without a key and with a wrong key, never touching the data layer and never echoing the presented key; Basic scheme, prefix and suffix variants are refused; the right key reaches the route; `/health` stays public; the key is checked before body parsing; `bearerToken` and `keyMatches` edge cases.
+- `test/unit/secrets.test.js`, `test/unit/redact.test.js`, `test/unit/socket.test.js` (`authorize`), `test/unit/notifier.test.js` (sentinel `S3NTINEL` in userinfo, path and query never appears in logs or errors for an unsupported scheme, a refused connection, a 500 or a timeout; trickling receiver times out), `test/unit/app.test.js` (503 degraded), `test/unit/mqtt_handler.test.js` and `test/unit/sim_device.test.js` (forced close calls back; device ID as client ID; download size and deadline), `test/unit/simulate_cli.test.js`, `test/unit/frontend/{api,key_prompt,app}.test.js`.
+- `test/integration/broker_auth.test.js` (real Mosquitto): anonymous and wrong-password clients refused; a device account subscribed to `devices/+/provisioned` and `devices/#` receives nothing for another device while the addressed device does; cross-device publishes dropped; platform commands delivered; a refused sentinel password never reaches the logs.
+- `test/integration/devices_api.test.js`: unauthenticated create and decommission have no side effect. `test/integration/server_start.test.js`: the key file is created and enforced; a missing broker password file fails the start. `test/integration/e2e.test.js`: a Socket.IO client without the key is refused and gets no telemetry. Every existing integration suite now uses the broker accounts and the operator key, so provisioning, telemetry, commands and firmware still work end to end with authentication on.
+
+**Acceptance command:** `make test && make smoke && make readme-check`
+
+**Commit message:**
+```
+Require operator API key and authenticate the MQTT broker
+
+Protect every /api route and the dashboard socket with a generated
+operator key, refuse anonymous broker clients with per-role ACLs,
+redact webhook URLs in logs, report degraded health and fix close hangs.
+```
+

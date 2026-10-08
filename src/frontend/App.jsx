@@ -2,6 +2,10 @@
  * Dashboard root component: loads devices, stats, open alerts and the
  * firmware catalogue over REST and listens for live alerts, telemetry,
  * status changes and firmware progress over Socket.IO.
+ *
+ * Nothing is loaded until the operator has entered the API key. The key
+ * is kept in sessionStorage (lib/api) and dropped again as soon as the
+ * platform rejects it.
  */
 
 'use strict';
@@ -13,16 +17,35 @@ var StatsBar = require('./components/StatsBar.jsx');
 var DeviceList = require('./components/DeviceList.jsx');
 var DeviceDetail = require('./components/DeviceDetail.jsx');
 var AlertsFeed = require('./components/AlertsFeed.jsx');
+var KeyPrompt = require('./components/KeyPrompt.jsx');
 var chartData = require('./lib/chart_data');
+var api = require('./lib/api');
 
 var STATUSES = ['registered', 'online', 'offline', 'maintenance', 'decommissioned'];
 var TYPES = ['sensor', 'actuator', 'gateway', 'controller'];
 var MAX_LIVE_POINTS = 100;
 var MAX_ALERTS = 50;
 
+function browserWindow() {
+    return typeof window !== 'undefined' ? window : undefined;
+}
+
 var App = React.createClass({
+    propTypes: {
+        keyStore: React.PropTypes.object
+    },
+
+    keyStore: function() {
+        if (!this._keyStore) {
+            this._keyStore = this.props.keyStore || api.keyStore(api.defaultStorage(browserWindow()));
+        }
+        return this._keyStore;
+    },
+
     getInitialState: function() {
         return {
+            apiKey: this.keyStore().get(),
+            authError: null,
             devices: [],
             alerts: [],
             stats: {},
@@ -36,11 +59,54 @@ var App = React.createClass({
     },
 
     componentDidMount: function() {
-        this.socket = io();
+        if (this.state.apiKey) {
+            this.connect();
+        }
+    },
+
+    setApiKey: function(key) {
+        this.keyStore().set(key);
+        this.setState({apiKey: key, authError: null}, this.connect);
+    },
+
+    // Called whenever the platform rejects the key: forget it and ask again.
+    unauthorized: function() {
+        this.keyStore().clear();
+        if (this.socket) {
+            this.socket.disconnect();
+            this.socket = null;
+        }
+        this.setState({apiKey: null, authError: 'The API key was rejected', selectedDevice: null});
+    },
+
+    apiFetch: function(url, opts) {
+        return api.apiFetch(this.state.apiKey, url, opts, fetch).catch(function(err) {
+            if (err.unauthorized) {
+                this.unauthorized();
+            }
+            throw err;
+        }.bind(this));
+    },
+
+    getJson: function(url, apply) {
+        this.apiFetch(url)
+            .then(function(res) { return res.json(); })
+            .then(apply.bind(this))
+            .catch(function() {});
+    },
+
+    connect: function() {
+        this.socket = io({query: api.socketQuery(this.state.apiKey), forceNew: true});
         this.fetchDevices();
         this.fetchStats();
         this.fetchAlerts();
         this.fetchFirmware();
+
+        this.socket.on('error', function(err) {
+            if (String(err) === 'Unauthorized') {
+                this.unauthorized();
+            }
+        }.bind(this));
 
         this.socket.on('alert', function(payload) {
             this.setState(function(prev) {
@@ -86,35 +152,27 @@ var App = React.createClass({
     },
 
     fetchDevices: function() {
-        fetch('/api/devices')
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                this.setState({devices: data.devices});
-            }.bind(this));
+        this.getJson('/api/devices', function(data) {
+            this.setState({devices: data.devices || []});
+        });
     },
 
     fetchStats: function() {
-        fetch('/api/stats')
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                this.setState({stats: data});
-            }.bind(this));
+        this.getJson('/api/stats', function(data) {
+            this.setState({stats: data});
+        });
     },
 
     fetchAlerts: function() {
-        fetch('/api/alerts?acknowledged=false')
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                this.setState({alerts: data.alerts});
-            }.bind(this));
+        this.getJson('/api/alerts?acknowledged=false', function(data) {
+            this.setState({alerts: data.alerts || []});
+        });
     },
 
     fetchFirmware: function() {
-        fetch('/api/firmware')
-            .then(function(res) { return res.json(); })
-            .then(function(data) {
-                this.setState({firmware: data.firmware || []});
-            }.bind(this));
+        this.getJson('/api/firmware', function(data) {
+            this.setState({firmware: data.firmware || []});
+        });
     },
 
     updateDevice: function(deviceId, fields) {
@@ -128,7 +186,7 @@ var App = React.createClass({
     },
 
     ackAlert: function(alertId) {
-        fetch('/api/alerts/' + encodeURIComponent(alertId) + '/ack', {method: 'POST'})
+        this.apiFetch('/api/alerts/' + encodeURIComponent(alertId) + '/ack', {method: 'POST'})
             .then(function(res) { return res.ok ? res.json() : null; })
             .then(function(acked) {
                 if (!acked) {
@@ -141,7 +199,8 @@ var App = React.createClass({
                         })
                     };
                 });
-            }.bind(this));
+            }.bind(this))
+            .catch(function() {});
     },
 
     selectDevice: function(deviceId) {
@@ -203,6 +262,7 @@ var App = React.createClass({
                 <DeviceDetail device={device}
                               liveTelemetry={this.state.liveTelemetry}
                               firmwareVersions={this.firmwareVersionsFor(device)}
+                              apiFetch={this.apiFetch}
                               socket={this.socket}/>
                 {update ? (
                     <p className={'firmware-progress ' + update.state}>
@@ -214,6 +274,9 @@ var App = React.createClass({
     },
 
     render: function() {
+        if (!this.state.apiKey) {
+            return <KeyPrompt onSubmit={this.setApiKey} error={this.state.authError}/>;
+        }
         return (
             <div className="dashboard">
                 <h1>IoT Device Management</h1>

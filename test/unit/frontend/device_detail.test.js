@@ -31,6 +31,7 @@ describe('DeviceDetail', function() {
                 device: DEVICE,
                 liveTelemetry: [],
                 firmwareVersions: ['1.2.0', '1.3.0'],
+                apiFetch: function() {},
                 socket: {emit: function() {}}
             }, props))
         );

@@ -447,8 +447,12 @@ MQTTHandler.prototype.stats = function() {
 };
 
 // Ends the client. A connected client sends DISCONNECT after its in-flight
-// messages; one that never connected is closed immediately, because a
-// graceful end would wait for a connection that may never come.
+// messages; one that is not connected is destroyed immediately, because a
+// graceful end would wait for a connection that may never come. A forced
+// end in MQTT.js 1.7 only calls back on the stream's 'close' event, which
+// never comes again when the broker has already dropped the connection
+// (for example after refusing its credentials), so that case calls back
+// right away.
 MQTTHandler.prototype.close = function(callback) {
     callback = callback || noop;
     var client = this.client;
@@ -458,7 +462,11 @@ MQTTHandler.prototype.close = function(callback) {
     if (!client) {
         return process.nextTick(callback);
     }
-    client.end(force, function() {
+    if (force) {
+        client.end(true);
+        return process.nextTick(callback);
+    }
+    client.end(false, function() {
         callback();
     });
 };

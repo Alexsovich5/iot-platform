@@ -2,8 +2,9 @@
 
 var expect = require('chai').expect;
 var sinon = require('sinon');
-var request = require('supertest');
 var createApp = require('../../src/app');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 var RULE_ID = '56d0f1a2b3c4d5e6f7a8b9c0';
 
@@ -50,11 +51,11 @@ describe('rules routes', function() {
             findByIdAndRemove: sinon.stub().yields(null, {_id: RULE_ID, name: 'Hot'})
         };
         alertService = {invalidateRules: sinon.spy()};
-        app = createApp({Rule: Rule, alertService: alertService});
+        app = createApp({apiKey: TEST_API_KEY, Rule: Rule, alertService: alertService});
     });
 
     it('POST /api/rules creates the rule, returns 201 and invalidates the cache once', function(done) {
-        request(app)
+        api(app)
             .post('/api/rules')
             .send({name: 'Hot', metric: 'temperature', operator: 'gt', threshold: 30, bogus: 1})
             .expect(201)
@@ -70,7 +71,7 @@ describe('rules routes', function() {
     });
 
     it('PUT /api/rules/:id updates the rule and invalidates the cache once', function(done) {
-        request(app)
+        api(app)
             .put('/api/rules/' + RULE_ID)
             .send({threshold: 40, _id: 'other'})
             .expect(200)
@@ -87,7 +88,7 @@ describe('rules routes', function() {
     });
 
     it('DELETE /api/rules/:id removes the rule and invalidates the cache once', function(done) {
-        request(app)
+        api(app)
             .delete('/api/rules/' + RULE_ID)
             .expect(200)
             .end(function(err) {
@@ -106,7 +107,7 @@ describe('rules routes', function() {
                 cb(validationError('deviceId and deviceType are mutually exclusive'));
             });
         };
-        request(app)
+        api(app)
             .post('/api/rules')
             .send({name: 'Both', deviceId: 'd1', deviceType: 'sensor'})
             .expect(400)
@@ -121,7 +122,7 @@ describe('rules routes', function() {
     });
 
     it('returns 400 for a malformed rule id', function(done) {
-        request(app)
+        api(app)
             .put('/api/rules/not-an-id')
             .send({threshold: 1})
             .expect(400)
@@ -137,11 +138,11 @@ describe('rules routes', function() {
     it('returns 404 for an unknown rule on PUT and DELETE', function(done) {
         Rule.findById = sinon.stub().yields(null, null);
         Rule.findByIdAndRemove = sinon.stub().yields(null, null);
-        request(app).put('/api/rules/' + RULE_ID).send({threshold: 1}).expect(404).end(function(err) {
+        api(app).put('/api/rules/' + RULE_ID).send({threshold: 1}).expect(404).end(function(err) {
             if (err) {
                 return done(err);
             }
-            request(app).delete('/api/rules/' + RULE_ID).expect(404).end(function(err2) {
+            api(app).delete('/api/rules/' + RULE_ID).expect(404).end(function(err2) {
                 if (err2) {
                     return done(err2);
                 }

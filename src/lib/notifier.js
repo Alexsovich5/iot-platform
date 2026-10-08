@@ -5,7 +5,12 @@
  * Options: {url, timeoutMs = 5000, log = console.error}. With an empty
  * url, notify() is a no-op. notify() never throws: connection errors,
  * timeouts and non-2xx responses are logged and passed to the optional
- * callback as an Error.
+ * callback as an Error. timeoutMs bounds the whole exchange, including a
+ * response body that keeps trickling in.
+ *
+ * The URL may carry credentials (userinfo, used as basic auth) or tokens
+ * in its path or query, so logs and errors only ever show its redacted
+ * form (see lib/redact).
  */
 
 'use strict';
@@ -13,6 +18,7 @@
 var http = require('http');
 var https = require('https');
 var urlLib = require('url');
+var redactUrl = require('./redact').redactUrl;
 
 var DEFAULT_TIMEOUT_MS = 5000;
 
@@ -31,13 +37,16 @@ Notifier.prototype.notify = function(alert, cb) {
     var finished = false;
     cb = cb || function() {};
 
+    var timer = null;
+
     function finish(err, result) {
         if (finished) {
             return;
         }
         finished = true;
+        clearTimeout(timer);
         if (err) {
-            self.log('Alert webhook failed:', err.message);
+            self.log('Alert webhook to ' + redactUrl(self.url) + ' failed:', err.message);
         }
         cb(err || null, result);
     }
@@ -55,13 +64,13 @@ Notifier.prototype.notify = function(alert, cb) {
         target = urlLib.parse(this.url);
     } catch (e) {
         return process.nextTick(function() {
-            finish(e);
+            finish(new Error('webhook request could not be built'));
         });
     }
     var transport = target.protocol === 'https:' ? https : http;
     if (target.protocol !== 'http:' && target.protocol !== 'https:') {
         return process.nextTick(function() {
-            finish(new Error('unsupported webhook URL ' + self.url));
+            finish(new Error('unsupported webhook URL scheme (http and https only)'));
         });
     }
 
@@ -88,12 +97,14 @@ Notifier.prototype.notify = function(alert, cb) {
         });
     });
 
-    req.setTimeout(this.timeoutMs, function() {
+    timer = setTimeout(function() {
         finish(new Error('webhook timed out after ' + self.timeoutMs + ' ms'));
         req.abort();
-    });
+    }, this.timeoutMs);
     req.on('error', function(err) {
-        finish(err);
+        // Node's connection errors name only the host and port; the
+        // message is still rebuilt so no part of the URL can leak.
+        finish(new Error('webhook request failed: ' + (err.code || 'error')));
     });
     req.end(body);
 };

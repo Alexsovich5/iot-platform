@@ -22,6 +22,7 @@ var Rule = require('./models/rule');
 var Alert = require('./models/alert');
 var Firmware = require('./models/firmware');
 var FirmwareUpdate = require('./models/firmware_update');
+var secrets = require('./lib/secrets');
 var socket = require('./socket');
 
 function configValue(key, fallback) {
@@ -38,8 +39,29 @@ function resolveBaseUrl(opts, port) {
     return configValue('firmware.publicBaseUrl', 'http://localhost:' + port);
 }
 
+// Reads the operator API key, the broker password and the provisioning
+// key. Values come from opts, then config, then the configured files; the
+// API key file is created with a random key on first start.
+function resolveSecrets(opts, mqttConfig) {
+    var out = {};
+    if (opts.apiKey) {
+        out.apiKey = opts.apiKey;
+    } else {
+        var keyFile = configValue('api.keyFile', '');
+        var loaded = secrets.loadOrCreateKey(keyFile);
+        if (loaded.created) {
+            console.log('Created a new operator API key in ' + keyFile);
+        }
+        out.apiKey = loaded.key;
+    }
+    out.mqttPassword = secrets.readSecret(mqttConfig.password, mqttConfig.passwordFile);
+    out.provisioningKey = opts.provisioningKey !== undefined ? opts.provisioningKey :
+        secrets.readSecret(configValue('provisioning.key', ''), configValue('provisioning.keyFile', ''));
+    return out;
+}
+
 // start(opts, cb) boots the platform. Overrides:
-//   port, mongoUri, mqtt, provisioningKey, publicBaseUrl, webhookUrl
+//   port, mongoUri, mqtt, apiKey, provisioningKey, publicBaseUrl, webhookUrl
 // cb(err, {server, port, baseUrl, mqttHandler, firmwareService, presence, close})
 function start(opts, cb) {
     if (typeof opts === 'function') {
@@ -58,6 +80,17 @@ function start(opts, cb) {
         mqttConfig[key] = opts.mqtt[key];
     });
     mqttConfig.port = parseInt(mqttConfig.port, 10) || 1883;
+
+    var resolved;
+    try {
+        resolved = resolveSecrets(opts, mqttConfig);
+    } catch (e) {
+        return process.nextTick(function() {
+            cb(e);
+        });
+    }
+    mqttConfig.password = resolved.mqttPassword;
+    delete mqttConfig.passwordFile;
 
     var server = http.createServer();
     var io = socketIO(server);
@@ -100,8 +133,7 @@ function start(opts, cb) {
 
     var mqttHandler = new MQTTHandler(mqttConfig, io, {
         alerts: alertService,
-        provisioningKey: opts.provisioningKey !== undefined ?
-            opts.provisioningKey : configValue('provisioning.key', '')
+        provisioningKey: resolved.provisioningKey
     });
     var port = opts.port !== undefined ? opts.port : configValue('server.port', 3000);
 
@@ -118,6 +150,7 @@ function start(opts, cb) {
     mqttHandler.firmware = firmwareService;
 
     var app = createApp({
+        apiKey: resolved.apiKey,
         mqttHandler: mqttHandler,
         alertService: alertService,
         firmwareService: firmwareService,
@@ -126,6 +159,7 @@ function start(opts, cb) {
     server.on('request', app);
 
     mqttHandler.connect();
+    io.use(socket.authorize(resolved.apiKey));
     socket.attach(io, mqttHandler, Device);
 
     function close(done) {

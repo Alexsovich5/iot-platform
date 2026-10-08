@@ -104,3 +104,49 @@ describe('socket.attach', function() {
         });
     });
 });
+
+describe('socket.authorize', function() {
+    var KEY = 'socket-operator-key-0123456789';
+
+    function handshake(query, headers) {
+        return {handshake: {query: query || {}, headers: headers || {}}, request: {headers: headers || {}}};
+    }
+
+    function run(middleware, sock) {
+        var result = {called: false, err: null};
+        middleware(sock, function(err) {
+            result.called = true;
+            result.err = err || null;
+        });
+        return result;
+    }
+
+    it('accepts the key from the apiKey query parameter', function() {
+        var result = run(socket.authorize(KEY), handshake({apiKey: KEY}));
+        expect(result.called).to.equal(true);
+        expect(result.err).to.equal(null);
+    });
+
+    it('accepts the key as a Bearer Authorization header', function() {
+        var result = run(socket.authorize(KEY), handshake({}, {authorization: 'Bearer ' + KEY}));
+        expect(result.err).to.equal(null);
+    });
+
+    it('rejects a missing or wrong key without echoing it', function() {
+        var missing = run(socket.authorize(KEY), handshake());
+        expect(missing.err).to.be.an.instanceof(Error);
+        expect(missing.err.message).to.equal('Unauthorized');
+
+        var wrong = run(socket.authorize(KEY), handshake({apiKey: 'S3NTINEL-wrong'}));
+        expect(wrong.err.message).to.equal('Unauthorized');
+
+        var array = run(socket.authorize(KEY), handshake({apiKey: [KEY]}));
+        expect(array.err.message).to.equal('Unauthorized');
+    });
+
+    it('refuses to build a middleware without a key', function() {
+        expect(function() {
+            socket.authorize('');
+        }).to.throw(/key/);
+    });
+});

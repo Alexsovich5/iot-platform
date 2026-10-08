@@ -14,10 +14,14 @@
  *     or failed. A successful install changes its firmware version.
  *   - A reboot command makes it republish its status.
  *
- * Options: {id, type, name, firmware, mqttUrl, provisioningKey,
- * intervalMs, random, mqtt, registerRetryMs, provisionTimeoutMs}.
+ * Options: {id, type, name, firmware, mqttUrl, username, password,
+ * provisioningKey, intervalMs, random, mqtt, registerRetryMs,
+ * provisionTimeoutMs, maxDownloadBytes, downloadTimeoutMs}.
  * `random` (default Math.random) drives the random walk; `mqtt` is the
- * MQTT module, injectable for tests.
+ * MQTT module, injectable for tests. The device connects with its id as
+ * MQTT client id, which the broker ACL uses to limit it to its own topics.
+ * A firmware download is abandoned once it exceeds maxDownloadBytes
+ * (default 10 MB, the registry limit) or downloadTimeoutMs in total.
  *
  * Events: 'command' (command body), 'download' ({url, statusCode, bytes,
  * md5}), 'firmware' ({updateId, state, error?}).
@@ -37,6 +41,7 @@ var BOUNDS = {
 };
 var METRICS = Object.keys(BOUNDS);
 var DOWNLOAD_TIMEOUT_MS = 15000;
+var MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024;
 
 function noop() {}
 
@@ -60,12 +65,16 @@ function SimDevice(options) {
     this.name = options.name || 'Simulated ' + this.type + ' ' + this.id;
     this.firmware = options.firmware || '1.0.0';
     this.mqttUrl = options.mqttUrl || 'mqtt://localhost:1883';
+    this.username = options.username || '';
+    this.password = options.password || '';
     this.provisioningKey = options.provisioningKey || '';
     this.intervalMs = options.intervalMs || 2000;
     this.random = options.random || Math.random;
     this.mqtt = options.mqtt || null;
     this.registerRetryMs = options.registerRetryMs || 2000;
     this.provisionTimeoutMs = options.provisionTimeoutMs || 30000;
+    this.maxDownloadBytes = options.maxDownloadBytes || MAX_DOWNLOAD_BYTES;
+    this.downloadTimeoutMs = options.downloadTimeoutMs || DOWNLOAD_TIMEOUT_MS;
 
     this.token = null;
     this.client = null;
@@ -156,11 +165,16 @@ SimDevice.prototype.start = function(callback) {
     };
 
     this._stopped = false;
-    this.client = this._mqtt().connect(this.mqttUrl, {
-        clientId: 'sim-' + crypto.randomBytes(6).toString('hex'),
+    var connectOptions = {
+        clientId: this.id,
         keepalive: 30,
         reconnectPeriod: 2000
-    });
+    };
+    if (this.username) {
+        connectOptions.username = this.username;
+        connectOptions.password = this.password;
+    }
+    this.client = this._mqtt().connect(this.mqttUrl, connectOptions);
 
     this.client.on('connect', function() {
         self.connected = true;
@@ -310,26 +324,47 @@ SimDevice.prototype._updateFirmware = function(payload) {
 SimDevice.prototype._download = function(fileUrl, cb) {
     var self = this;
     var done = false;
+    var timer = null;
+    var req = null;
     function finish(err, data) {
         if (!done) {
             done = true;
+            clearTimeout(timer);
             cb(err, data);
+        }
+    }
+    function abort(err) {
+        finish(err);
+        if (req) {
+            req.abort();
         }
     }
 
     var parsed = typeof fileUrl === 'string' ? url.parse(fileUrl) : {};
     if (parsed.protocol !== 'http:') {
         return process.nextTick(function() {
-            finish(new Error('Unsupported firmware URL: ' + fileUrl));
+            finish(new Error('Unsupported firmware URL scheme'));
         });
     }
 
-    var req = http.get(fileUrl, function(res) {
+    timer = setTimeout(function() {
+        abort(new Error('Download timed out after ' + self.downloadTimeoutMs + ' ms'));
+    }, this.downloadTimeoutMs);
+
+    req = http.get(fileUrl, function(res) {
         var chunks = [];
+        var received = 0;
         res.on('data', function(chunk) {
+            received += chunk.length;
+            if (received > self.maxDownloadBytes) {
+                return abort(new Error('Download larger than ' + self.maxDownloadBytes + ' bytes'));
+            }
             chunks.push(chunk);
         });
         res.on('end', function() {
+            if (done) {
+                return;
+            }
             var data = Buffer.concat(chunks);
             self.emit('download', {
                 url: fileUrl,
@@ -346,10 +381,6 @@ SimDevice.prototype._download = function(fileUrl, cb) {
     });
     req.on('error', function(err) {
         finish(new Error('Download failed: ' + err.message));
-    });
-    req.setTimeout(DOWNLOAD_TIMEOUT_MS, function() {
-        req.abort();
-        finish(new Error('Download timed out'));
     });
 };
 
@@ -370,7 +401,13 @@ SimDevice.prototype.stop = function(callback) {
     if (!client) {
         return process.nextTick(callback);
     }
-    client.end(force, function() {
+    // A forced end never calls back once the stream is already closed
+    // (see MQTTHandler.close), so it is not waited for.
+    if (force) {
+        client.end(true);
+        return process.nextTick(callback);
+    }
+    client.end(false, function() {
         callback();
     });
 };

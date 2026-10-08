@@ -4,10 +4,11 @@ var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
 var expect = require('chai').expect;
-var request = require('supertest');
 var createApp = require('../../src/app');
 var Firmware = require('../../src/models/firmware');
 var db = require('../support/db');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 // supertest buffers only text and JSON responses; binary bodies are
 // collected here so they can be compared byte for byte.
@@ -28,7 +29,7 @@ describe('firmware registry', function() {
     var md5 = crypto.createHash('md5').update(blob).digest('hex');
 
     function upload(query, body, contentType) {
-        return request(app)
+        return api(app)
             .post('/api/firmware')
             .query(query)
             .set('Content-Type', contentType || 'application/octet-stream')
@@ -41,6 +42,7 @@ describe('firmware registry', function() {
 
     before(function() {
         app = createApp({
+            apiKey: TEST_API_KEY,
             mqttHandler: {isConnected: function() { return false; }},
             firmwareDir: dir
         });
@@ -62,7 +64,7 @@ describe('firmware registry', function() {
                 var onDisk = fs.readFileSync(path.join(dir, 'sensor', '1.2.0.bin'));
                 expect(onDisk.equals(blob)).to.equal(true);
 
-                request(app).get('/api/firmware').expect(200).end(function(listErr, list) {
+                api(app).get('/api/firmware').expect(200).end(function(listErr, list) {
                     if (listErr) {
                         return done(listErr);
                     }
@@ -74,7 +76,7 @@ describe('firmware registry', function() {
     });
 
     it('serves a byte-identical download', function(done) {
-        request(app)
+        api(app)
             .get('/firmware/sensor/1.2.0.bin')
             .buffer(true)
             .parse(binaryParser)
@@ -174,10 +176,10 @@ describe('firmware registry', function() {
     });
 
     it('returns 404 for a firmware file that does not exist', function(done) {
-        request(app).get('/firmware/sensor/7.7.7.bin').expect(404).end(done);
+        api(app).get('/firmware/sensor/7.7.7.bin').expect(404).end(done);
     });
 
     it('returns 404 for a malformed download path', function(done) {
-        request(app).get('/firmware/sensor/..%2F..%2Fetc.bin').expect(404).end(done);
+        api(app).get('/firmware/sensor/..%2F..%2Fetc.bin').expect(404).end(done);
     });
 });

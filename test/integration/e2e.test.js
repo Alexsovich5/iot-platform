@@ -10,18 +10,15 @@ var path = require('path');
 var crypto = require('crypto');
 var childProcess = require('child_process');
 var expect = require('chai').expect;
-var config = require('config');
-var request = require('supertest');
 var ioClient = require('socket.io-client');
 var server = require('../../src/server');
 var db = require('../support/db');
+var creds = require('../support/mqtt_creds');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 var KEY = 'e2e-test-key';
 var SIMULATOR = path.join(__dirname, '..', '..', 'bin', 'simulate-devices.js');
-
-function brokerUrl() {
-    return 'mqtt://' + config.get('mqtt.host') + ':' + (parseInt(config.get('mqtt.port'), 10) || 1883);
-}
 
 // Calls check(cb) every 100 ms until it yields true or `timeout` ms pass.
 function eventually(check, timeout, done) {
@@ -58,7 +55,7 @@ describe('end-to-end: simulator process against the full platform', function() {
     });
 
     before(function(done) {
-        server.start({port: 0, provisioningKey: KEY}, function(err, result) {
+        server.start({apiKey: TEST_API_KEY, port: 0, provisioningKey: KEY}, function(err, result) {
             if (err) {
                 return done(err);
             }
@@ -72,7 +69,7 @@ describe('end-to-end: simulator process against the full platform', function() {
     // The rule exists before any device reports, so the first reading
     // already sees it (creating it also clears the cached rule set).
     before(function(done) {
-        request(started.baseUrl)
+        api(started.baseUrl)
             .post('/api/rules')
             .send({name: 'Battery below 101', metric: 'battery', operator: 'lt', threshold: 101,
                 severity: 'info', cooldownSec: 60})
@@ -85,7 +82,9 @@ describe('end-to-end: simulator process against the full platform', function() {
             '--duration', '8',
             '--interval', '500',
             '--prefix', prefix,
-            '--mqtt', brokerUrl(),
+            '--mqtt', creds.brokerUrl(),
+            '--username', 'device',
+            '--password-file', creds.devicePasswordFile(),
             '--key', KEY
         ], {stdio: ['ignore', 'pipe', 'pipe']});
         child.stdout.on('data', function(chunk) {
@@ -115,7 +114,7 @@ describe('end-to-end: simulator process against the full platform', function() {
 
     it('registers all three simulated devices', function(done) {
         eventually(function(cb) {
-            request(started.baseUrl).get('/api/devices').end(function(err, res) {
+            api(started.baseUrl).get('/api/devices').end(function(err, res) {
                 if (err) {
                     return cb(err);
                 }
@@ -136,7 +135,7 @@ describe('end-to-end: simulator process against the full platform', function() {
 
     it('reports at least three devices online in /api/stats', function(done) {
         eventually(function(cb) {
-            request(started.baseUrl).get('/api/stats').end(function(err, res) {
+            api(started.baseUrl).get('/api/stats').end(function(err, res) {
                 if (err) {
                     return cb(err);
                 }
@@ -147,7 +146,7 @@ describe('end-to-end: simulator process against the full platform', function() {
 
     it('raises an alert from the battery rule', function(done) {
         eventually(function(cb) {
-            request(started.baseUrl).get('/api/alerts').end(function(err, res) {
+            api(started.baseUrl).get('/api/alerts').end(function(err, res) {
                 if (err) {
                     return cb(err);
                 }
@@ -157,6 +156,26 @@ describe('end-to-end: simulator process against the full platform', function() {
                 cb(null, alerts.length >= 1);
             });
         }, 6000, done);
+    });
+
+    it('refuses a dashboard socket without the operator key', function(done) {
+        var anonymous = ioClient(started.baseUrl, {transports: ['websocket'], forceNew: true, reconnection: false});
+        var telemetry = 0;
+        anonymous.on('telemetry', function() {
+            telemetry += 1;
+        });
+        anonymous.on('connect', function() {
+            anonymous.emit('subscribe_device', ids[0]);
+        });
+        anonymous.on('error', function(err) {
+            expect(String(err)).to.match(/Unauthorized/);
+            // Give the platform time to publish telemetry the socket must not see.
+            setTimeout(function() {
+                anonymous.disconnect();
+                expect(telemetry).to.equal(0);
+                done();
+            }, 1500);
+        });
     });
 
     it('pushes live telemetry to a dashboard socket after subscribe_device', function(done) {
@@ -172,7 +191,12 @@ describe('end-to-end: simulator process against the full platform', function() {
             clearTimeout(timer);
             done(err);
         }
-        client = ioClient(started.baseUrl, {transports: ['websocket'], forceNew: true, reconnection: false});
+        client = ioClient(started.baseUrl, {
+            query: 'apiKey=' + encodeURIComponent(TEST_API_KEY),
+            transports: ['websocket'],
+            forceNew: true,
+            reconnection: false
+        });
         client.on('connect_error', finish);
         client.on('connect', function() {
             client.emit('subscribe_device', ids[0]);

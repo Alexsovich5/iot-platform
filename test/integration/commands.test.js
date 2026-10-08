@@ -1,19 +1,15 @@
 'use strict';
 
-var crypto = require('crypto');
 var expect = require('chai').expect;
 var mqtt = require('mqtt');
-var config = require('config');
-var request = require('supertest');
 var createApp = require('../../src/app');
 var MQTTHandler = require('../../src/mqtt_handler');
 var Device = require('../../src/models/device');
 var FakeIo = require('../support/fake_io');
 var db = require('../support/db');
-
-function brokerUrl() {
-    return 'mqtt://' + config.get('mqtt.host') + ':' + (parseInt(config.get('mqtt.port'), 10) || 1883);
-}
+var creds = require('../support/mqtt_creds');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 describe('command dispatch (real broker and MongoDB)', function() {
     this.timeout(15000);
@@ -35,18 +31,15 @@ describe('command dispatch (real broker and MongoDB)', function() {
     });
 
     before(function(done) {
-        handler = new MQTTHandler({host: config.get('mqtt.host'), port: config.get('mqtt.port')}, new FakeIo(), {
+        handler = new MQTTHandler(creds.platformConfig(), new FakeIo(), {
             provisioningKey: 'commands-test-key'
         });
-        app = createApp({mqttHandler: handler, stats: handler.stats.bind(handler)});
+        app = createApp({apiKey: TEST_API_KEY, mqttHandler: handler, stats: handler.stats.bind(handler)});
         handler.connect(done);
     });
 
     before(function(done) {
-        device = mqtt.connect(brokerUrl(), {
-            clientId: 'commands-test-' + crypto.randomBytes(6).toString('hex'),
-            reconnectPeriod: 0
-        });
+        device = mqtt.connect(creds.brokerUrl(), creds.deviceOptions('c1'));
         device.once('connect', function() {
             device.subscribe('devices/c1/commands', {qos: 1}, function(err) {
                 done(err);
@@ -81,7 +74,7 @@ describe('command dispatch (real broker and MongoDB)', function() {
             check();
         });
 
-        request(app)
+        api(app)
             .post('/api/devices/c1/commands')
             .send({command: 'reboot', payload: {delaySec: 1}})
             .end(function(err, res) {
@@ -96,7 +89,7 @@ describe('command dispatch (real broker and MongoDB)', function() {
     });
 
     it('returns 409 for a decommissioned device', function(done) {
-        request(app)
+        api(app)
             .post('/api/devices/c2/commands')
             .send({command: 'reboot'})
             .expect(409)
@@ -104,7 +97,7 @@ describe('command dispatch (real broker and MongoDB)', function() {
     });
 
     it('returns 404 for an unknown device', function(done) {
-        request(app)
+        api(app)
             .post('/api/devices/nope/commands')
             .send({command: 'reboot'})
             .expect(404)
@@ -112,7 +105,7 @@ describe('command dispatch (real broker and MongoDB)', function() {
     });
 
     it('returns 400 for an invalid command name', function(done) {
-        request(app)
+        api(app)
             .post('/api/devices/c1/commands')
             .send({command: 'Reboot Now'})
             .expect(400)
@@ -120,11 +113,11 @@ describe('command dispatch (real broker and MongoDB)', function() {
     });
 
     it('returns 503 when MQTT is disconnected', function(done) {
-        var offline = createApp({mqttHandler: {
+        var offline = createApp({apiKey: TEST_API_KEY, mqttHandler: {
             isConnected: function() { return false; },
             sendCommand: function() { throw new Error('should not be called'); }
         }});
-        request(offline)
+        api(offline)
             .post('/api/devices/c1/commands')
             .send({command: 'reboot'})
             .expect(503)

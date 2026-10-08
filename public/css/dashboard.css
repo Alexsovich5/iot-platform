@@ -215,3 +215,21 @@ h1 {
 .muted {
     color: #888;
 }
+
+.key-prompt {
+    max-width: 360px;
+    margin: 80px auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.key-prompt label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.key-error {
+    color: #b00020;
+}

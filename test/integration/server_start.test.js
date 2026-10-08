@@ -1,20 +1,42 @@
 'use strict';
 
+var fs = require('fs');
 var expect = require('chai').expect;
+var config = require('config');
+var mongoose = require('mongoose');
 var request = require('supertest');
 var server = require('../../src/server');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
+
+// Calls back once the broker (platform account from config) and MongoDB
+// are both connected, or with an error after 10 s.
+function whenConnected(started, done) {
+    var deadline = Date.now() + 10000;
+    (function poll() {
+        if (started.mqttHandler.isConnected() && mongoose.connection.readyState === 1) {
+            return done();
+        }
+        if (Date.now() > deadline) {
+            return done(new Error('broker or MongoDB not connected within 10 s'));
+        }
+        setTimeout(poll, 50);
+    })();
+}
 
 describe('server.start', function() {
+    this.timeout(15000);
+
     describe('with port 0 and no publicBaseUrl', function() {
         var started;
 
         before(function(done) {
-            server.start({port: 0}, function(err, result) {
+            server.start({apiKey: TEST_API_KEY, port: 0}, function(err, result) {
                 if (err) {
                     return done(err);
                 }
                 started = result;
-                done();
+                whenConnected(started, done);
             });
         });
 
@@ -61,7 +83,7 @@ describe('server.start', function() {
         });
 
         it('answers /health over HTTP', function(done) {
-            request(started.baseUrl)
+            api(started.baseUrl)
                 .get('/health')
                 .expect(200)
                 .end(function(err, res) {
@@ -75,7 +97,7 @@ describe('server.start', function() {
 
         it('reports the MQTT handler rejection count in /health', function(done) {
             started.mqttHandler.rejectedCount = 2;
-            request(started.baseUrl)
+            api(started.baseUrl)
                 .get('/health')
                 .expect(200)
                 .end(function(err, res) {
@@ -89,7 +111,7 @@ describe('server.start', function() {
         });
 
         it('returns 400 JSON for a malformed JSON body', function(done) {
-            request(started.baseUrl)
+            api(started.baseUrl)
                 .put('/api/devices/abc')
                 .set('Content-Type', 'application/json')
                 .send('{"broken": ')
@@ -109,7 +131,7 @@ describe('server.start', function() {
         var started;
 
         before(function(done) {
-            server.start({port: 0, publicBaseUrl: 'http://example.test'}, function(err, result) {
+            server.start({apiKey: TEST_API_KEY, port: 0, publicBaseUrl: 'http://example.test'}, function(err, result) {
                 if (err) {
                     return done(err);
                 }
@@ -126,5 +148,51 @@ describe('server.start', function() {
             expect(started.port).to.be.above(0);
             expect(started.baseUrl).to.equal('http://example.test');
         });
+    });
+
+    describe('without an apiKey override', function() {
+        var started;
+        var keyFile = config.get('api.keyFile');
+
+        before(function(done) {
+            try {
+                fs.unlinkSync(keyFile);
+            } catch (e) {
+                if (e.code !== 'ENOENT') {
+                    return done(e);
+                }
+            }
+            server.start({port: 0}, function(err, result) {
+                if (err) {
+                    return done(err);
+                }
+                started = result;
+                done();
+            });
+        });
+
+        after(function(done) {
+            started.close(done);
+        });
+
+        it('creates the operator key file and requires that key on /api', function(done) {
+            var key = fs.readFileSync(keyFile, 'utf8').trim();
+            expect(key).to.match(/^[0-9a-f]{64}$/);
+            request(started.baseUrl).get('/api/rules').expect(401).end(function(err) {
+                if (err) {
+                    return done(err);
+                }
+                api(started.baseUrl, key).get('/api/rules').expect(200, done);
+            });
+        });
+    });
+
+    it('fails to start when the configured broker password file is missing', function(done) {
+        server.start({apiKey: TEST_API_KEY, port: 0, mqtt: {password: '', passwordFile: '/nonexistent/pw'}},
+            function(err) {
+                expect(err).to.be.an.instanceof(Error);
+                expect(err.message).to.contain('/nonexistent/pw');
+                done();
+            });
     });
 });

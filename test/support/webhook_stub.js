@@ -3,7 +3,8 @@
 /**
  * Local HTTP server standing in for a webhook receiver. Every request is
  * recorded as {method, url, headers, body}. `mode` controls the reply:
- * 'ok' answers 200, 'error' answers 500 and 'hang' never answers.
+ * 'ok' answers 200, 'error' answers 500, 'hang' never answers and
+ * 'trickle' sends the headers and then one byte every 50 ms without end.
  *
  *   var stub = new WebhookStub();
  *   stub.start(function() { ... stub.url ... });
@@ -34,6 +35,19 @@ function WebhookStub() {
             });
             self._notifyWaiters();
             if (self.mode === 'hang') {
+                return;
+            }
+            if (self.mode === 'trickle') {
+                res.writeHead(200, {'Content-Type': 'text/plain'});
+                var timer = setInterval(function() {
+                    res.write('.');
+                }, 50);
+                res.on('close', function() {
+                    clearInterval(timer);
+                });
+                req.socket.on('close', function() {
+                    clearInterval(timer);
+                });
                 return;
             }
             var status = self.mode === 'error' ? 500 : 200;

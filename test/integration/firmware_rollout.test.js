@@ -4,8 +4,6 @@ var crypto = require('crypto');
 var path = require('path');
 var expect = require('chai').expect;
 var mqtt = require('mqtt');
-var config = require('config');
-var request = require('supertest');
 var createApp = require('../../src/app');
 var MQTTHandler = require('../../src/mqtt_handler');
 var FirmwareService = require('../../src/lib/firmware').FirmwareService;
@@ -13,10 +11,9 @@ var Device = require('../../src/models/device');
 var FirmwareUpdate = require('../../src/models/firmware_update');
 var FakeIo = require('../support/fake_io');
 var db = require('../support/db');
-
-function brokerUrl() {
-    return 'mqtt://' + config.get('mqtt.host') + ':' + (parseInt(config.get('mqtt.port'), 10) || 1883);
-}
+var creds = require('../support/mqtt_creds');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 // Calls check(cb) every 50 ms until it yields true or `timeout` ms pass.
 function eventually(check, timeout, done) {
@@ -49,6 +46,7 @@ describe('firmware rollout (real broker and MongoDB)', function() {
     var service;
     var app;
     var device;
+    var observer;
     var tokens = {};
     var commands = [];
     var updates;
@@ -58,7 +56,7 @@ describe('firmware rollout (real broker and MongoDB)', function() {
     });
 
     before(function(done) {
-        handler = new MQTTHandler({host: config.get('mqtt.host'), port: config.get('mqtt.port')}, io, {
+        handler = new MQTTHandler(creds.platformConfig(), io, {
             provisioningKey: 'rollout-test-key'
         });
         service = new FirmwareService({
@@ -70,6 +68,7 @@ describe('firmware rollout (real broker and MongoDB)', function() {
         });
         handler.firmware = service;
         app = createApp({
+            apiKey: TEST_API_KEY,
             mqttHandler: handler,
             firmwareService: service,
             firmwareDir: dir,
@@ -78,30 +77,41 @@ describe('firmware rollout (real broker and MongoDB)', function() {
         handler.connect(done);
     });
 
+    // The broker ACL lets a device account see only its own commands, so
+    // commands for every device are recorded through a second platform
+    // account connection, and fw-1's reports go through a device account.
     before(function(done) {
-        device = mqtt.connect(brokerUrl(), {
-            clientId: 'rollout-test-' + crypto.randomBytes(6).toString('hex'),
-            reconnectPeriod: 0
-        });
-        device.on('message', function(topic, message) {
+        observer = mqtt.connect(creds.brokerUrl(),
+            creds.platformOptions('rollout-observer-' + crypto.randomBytes(6).toString('hex')));
+        observer.on('message', function(topic, message) {
             commands.push({topic: topic, body: JSON.parse(message.toString())});
         });
-        device.once('connect', function() {
-            device.subscribe('devices/+/commands', {qos: 1}, function(err) {
+        observer.once('connect', function() {
+            observer.subscribe('devices/+/commands', {qos: 1}, function(err) {
                 done(err);
             });
+        });
+        observer.once('error', done);
+    });
+
+    before(function(done) {
+        device = mqtt.connect(creds.brokerUrl(), creds.deviceOptions('fw-1'));
+        device.once('connect', function() {
+            done();
         });
         device.once('error', done);
     });
 
     after(function(done) {
         device.end(false, function() {
-            handler.close(done);
+            observer.end(false, function() {
+                handler.close(done);
+            });
         });
     });
 
     it('uploads firmware 1.1.0 for sensors', function(done) {
-        request(app)
+        api(app)
             .post('/api/firmware')
             .query({version: '1.1.0', deviceType: 'sensor'})
             .set('Content-Type', 'application/octet-stream')
@@ -120,7 +130,7 @@ describe('firmware rollout (real broker and MongoDB)', function() {
         var ids = ['fw-1', 'fw-2', 'fw-3'];
         var remaining = ids.length;
         ids.forEach(function(id) {
-            request(app)
+            api(app)
                 .post('/api/devices')
                 .send({deviceId: id, name: 'Sensor ' + id, type: 'sensor'})
                 .expect(201)
@@ -131,14 +141,14 @@ describe('firmware rollout (real broker and MongoDB)', function() {
                     tokens[id] = res.body.token;
                     remaining -= 1;
                     if (remaining === 0) {
-                        request(app).delete('/api/devices/fw-3').expect(200).end(done);
+                        api(app).delete('/api/devices/fw-3').expect(200).end(done);
                     }
                 });
         });
     });
 
     it('rolls out to the two active sensors and publishes a command to each', function(done) {
-        request(app)
+        api(app)
             .post('/api/firmware/sensor/1.1.0/rollout')
             .expect(202)
             .end(function(err, res) {
@@ -251,7 +261,7 @@ describe('firmware rollout (real broker and MongoDB)', function() {
     });
 
     it('lists updates filtered by device and state', function(done) {
-        request(app)
+        api(app)
             .get('/api/firmware/updates')
             .query({deviceId: 'fw-1', state: 'success'})
             .expect(200)
@@ -261,12 +271,12 @@ describe('firmware rollout (real broker and MongoDB)', function() {
                 }
                 expect(res.body.updates).to.have.length(1);
                 expect(res.body.updates[0].deviceId).to.equal('fw-1');
-                request(app).get('/api/firmware/updates').query({state: 'bogus'}).expect(400).end(done);
+                api(app).get('/api/firmware/updates').query({state: 'bogus'}).expect(400).end(done);
             });
     });
 
     it('does not target a device that is already on the version', function(done) {
-        request(app)
+        api(app)
             .post('/api/firmware/sensor/1.1.0/rollout')
             .expect(202)
             .end(function(err, res) {
@@ -281,7 +291,7 @@ describe('firmware rollout (real broker and MongoDB)', function() {
     });
 
     it('starts an update for a single device', function(done) {
-        request(app)
+        api(app)
             .post('/api/devices/fw-2/firmware')
             .send({version: '1.1.0'})
             .expect(202)
@@ -297,36 +307,37 @@ describe('firmware rollout (real broker and MongoDB)', function() {
     });
 
     it('rejects single-device updates that cannot be served', function(done) {
-        request(app).post('/api/devices/fw-2/firmware').send({version: '1.1'}).expect(400).end(function(err) {
+        api(app).post('/api/devices/fw-2/firmware').send({version: '1.1'}).expect(400).end(function(err) {
             if (err) {
                 return done(err);
             }
-            request(app).post('/api/devices/fw-2/firmware').send({version: '9.9.9'}).expect(404).end(function(err2) {
+            api(app).post('/api/devices/fw-2/firmware').send({version: '9.9.9'}).expect(404).end(function(err2) {
                 if (err2) {
                     return done(err2);
                 }
-                request(app).post('/api/devices/nope/firmware').send({version: '1.1.0'}).expect(404).end(function(err3) {
+                api(app).post('/api/devices/nope/firmware').send({version: '1.1.0'}).expect(404).end(function(err3) {
                     if (err3) {
                         return done(err3);
                     }
-                    request(app).post('/api/devices/fw-3/firmware').send({version: '1.1.0'}).expect(409).end(done);
+                    api(app).post('/api/devices/fw-3/firmware').send({version: '1.1.0'}).expect(409).end(done);
                 });
             });
         });
     });
 
     it('returns 404 for a rollout of an unknown version and 400 for a bad device type', function(done) {
-        request(app).post('/api/firmware/sensor/9.9.9/rollout').expect(404).end(function(err) {
+        api(app).post('/api/firmware/sensor/9.9.9/rollout').expect(404).end(function(err) {
             if (err) {
                 return done(err);
             }
-            request(app).post('/api/firmware/toaster/1.1.0/rollout').expect(400).end(done);
+            api(app).post('/api/firmware/toaster/1.1.0/rollout').expect(400).end(done);
         });
     });
 
     it('returns 503 when the broker is disconnected', function(done) {
         var offline = {isConnected: function() { return false; }};
         var offlineApp = createApp({
+            apiKey: TEST_API_KEY,
             mqttHandler: offline,
             firmwareService: new FirmwareService({
                 FirmwareUpdate: FirmwareUpdate,
@@ -337,6 +348,6 @@ describe('firmware rollout (real broker and MongoDB)', function() {
             }),
             firmwareDir: dir
         });
-        request(offlineApp).post('/api/firmware/sensor/1.1.0/rollout').expect(503).end(done);
+        api(offlineApp).post('/api/firmware/sensor/1.1.0/rollout').expect(503).end(done);
     });
 });

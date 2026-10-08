@@ -38,12 +38,13 @@ function inBounds(reading) {
 }
 
 // Starts a SimDevice against a fake client and answers its registration.
+// done(err, sim, client, fake)
 function startProvisioned(opts, done) {
     var fake = createFakeMqtt();
     opts.mqtt = fake.mqtt;
     var sim = new SimDevice(opts);
     sim.start(function(err) {
-        done(err, sim, fake.client);
+        done(err, sim, fake.client, fake);
     });
     fake.client.simulateConnect();
     waitFor(function() {
@@ -111,19 +112,30 @@ describe('SimDevice', function() {
     describe('provisioning and telemetry', function() {
         var sim;
         var client;
+        var fakeMqtt;
 
         before(function(done) {
             startProvisioned({
                 id: 'unit-sim-1',
                 type: 'gateway',
+                username: 'device',
+                password: 'device-password',
                 provisioningKey: 'secret-key',
                 intervalMs: 10,
                 random: seeded(1)
-            }, function(err, s, c) {
+            }, function(err, s, c, f) {
                 sim = s;
                 client = c;
+                fakeMqtt = f;
                 done(err);
             });
+        });
+
+        it('connects with its device id as client id and the broker credentials', function() {
+            var options = fakeMqtt.connectArgs.options;
+            expect(options.clientId).to.equal('unit-sim-1');
+            expect(options.username).to.equal('device');
+            expect(options.password).to.equal('device-password');
         });
 
         after(function(done) {
@@ -190,6 +202,20 @@ describe('SimDevice', function() {
         });
     });
 
+    it('stops a device whose broker connection never came up', function(done) {
+        var fake = createFakeMqtt();
+        fake.client.end = function(force) {
+            this.ended = true;
+            this.endForce = !!force;
+        };
+        var sim = new SimDevice({id: 'unit-never-connected', mqtt: fake.mqtt, provisioningKey: 'k'});
+        sim.start(function() {});
+        sim.stop(function() {
+            expect(fake.client.endForce).to.equal(true);
+            done();
+        });
+    });
+
     it('fails start when the platform rejects the registration', function(done) {
         var fake = createFakeMqtt();
         var sim = new SimDevice({id: 'unit-rejected', provisioningKey: 'wrong', mqtt: fake.mqtt});
@@ -221,6 +247,28 @@ describe('SimDevice', function() {
                     res.writeHead(200, {'Content-Type': 'application/octet-stream'});
                     return res.end(blob);
                 }
+                if (req.url === '/firmware/sensor/endless.bin') {
+                    // Streams 1 KiB chunks until the client goes away.
+                    res.writeHead(200, {'Content-Type': 'application/octet-stream'});
+                    var endless = setInterval(function() {
+                        res.write(crypto.randomBytes(1024));
+                    }, 1);
+                    req.socket.on('close', function() {
+                        clearInterval(endless);
+                    });
+                    return;
+                }
+                if (req.url === '/firmware/sensor/trickle.bin') {
+                    // One byte every 50 ms, never finishing.
+                    res.writeHead(200, {'Content-Type': 'application/octet-stream'});
+                    var trickle = setInterval(function() {
+                        res.write('x');
+                    }, 50);
+                    req.socket.on('close', function() {
+                        clearInterval(trickle);
+                    });
+                    return;
+                }
                 res.writeHead(404);
                 res.end();
             });
@@ -238,8 +286,12 @@ describe('SimDevice', function() {
             return client.publishedTo('devices/' + id + '/firmware');
         }
 
-        function runUpdate(id, payload, expectedStates, done) {
-            startProvisioned({id: id, provisioningKey: 'k', intervalMs: 60000, random: seeded(3)},
+        function runUpdate(id, payload, expectedStates, done, extra) {
+            var opts = {id: id, provisioningKey: 'k', intervalMs: 60000, random: seeded(3)};
+            Object.keys(extra || {}).forEach(function(key) {
+                opts[key] = extra[key];
+            });
+            startProvisioned(opts,
                 function(err, sim, client) {
                     if (err) {
                         return done(err);
@@ -313,6 +365,42 @@ describe('SimDevice', function() {
                 expect(sim.firmware).to.equal('1.0.0');
                 done();
             });
+        });
+
+        it('reports failed when the download grows past the size limit', function(done) {
+            this.timeout(5000);
+            var payload = {updateId: 'u4', version: '2.0.0', url: baseUrl + '/firmware/sensor/endless.bin', md5: md5};
+            runUpdate('unit-fw-big', payload, ['downloading', 'failed'], function(err, sim, client) {
+                if (err) {
+                    return done(err);
+                }
+                var sent = reports(client, 'unit-fw-big');
+                expect(sent[1].state).to.equal('failed');
+                expect(sent[1].error).to.match(/larger than 65536 bytes/);
+                expect(sim.firmware).to.equal('1.0.0');
+                done();
+            }, {maxDownloadBytes: 65536});
+        });
+
+        it('reports failed when the download does not finish within the deadline', function(done) {
+            this.timeout(5000);
+            var payload = {updateId: 'u5', version: '2.0.0', url: baseUrl + '/firmware/sensor/trickle.bin', md5: md5};
+            var started = Date.now();
+            runUpdate('unit-fw-slow', payload, ['downloading', 'failed'], function(err, sim, client) {
+                if (err) {
+                    return done(err);
+                }
+                var sent = reports(client, 'unit-fw-slow');
+                expect(sent[1].error).to.match(/timed out/);
+                expect(Date.now() - started).to.be.below(1900);
+                done();
+            }, {downloadTimeoutMs: 300});
+        });
+
+        it('limits downloads to the registry maximum of 10 MB by default', function() {
+            var sim = new SimDevice({id: 'unit-defaults'});
+            expect(sim.maxDownloadBytes).to.equal(10 * 1024 * 1024);
+            expect(sim.downloadTimeoutMs).to.equal(15000);
         });
     });
 });

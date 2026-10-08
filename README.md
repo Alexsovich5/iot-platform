@@ -19,8 +19,11 @@ Personal project built on the 2015-era stack (Node 4.3, Express 4.13, MQTT.js 1.
 - **Alert notifications**: new alerts are emitted to the dashboard over Socket.IO and, when `alerts.webhookUrl` is set, POSTed as JSON to that URL (`src/lib/notifier.js`, `src/lib/alerts.js`; `test/unit/notifier.test.js`, `test/integration/alerts_flow.test.js`).
 - **Firmware registry**: `POST /api/firmware?version=&deviceType=` stores an `application/octet-stream` body of up to 10 MB on a volume with its size and MD5, lists uploads, and serves them at `/firmware/:deviceType/:version.bin` (`src/routes/firmware.js`, `src/models/firmware.js`; `test/integration/firmware_registry.test.js`).
 - **Firmware update distribution and tracking**: updates go to one device or roll out to every non-decommissioned device of a type. Each device's progress (`pending → downloading → installing → success|failed`) is recorded from `devices/<id>/firmware`, and a successful update sets the device's firmware version (`src/lib/firmware.js`, `src/models/firmware_update.js`; `test/unit/firmware.test.js`, `test/integration/firmware_rollout.test.js`).
-- **REST API**: everything above is available as JSON under `/api`, plus `/health` (`src/app.js`, `src/routes/`; `test/unit/app.test.js`, `test/integration/devices_api.test.js`, `test/integration/server_start.test.js`).
-- **Device-fleet simulator**: `bin/simulate-devices.js` starts N simulated devices that self-provision, publish random-walk telemetry, answer commands and run the firmware download, MD5 check and progress reporting (`src/sim/device.js`; `test/unit/sim_device.test.js`, `test/unit/simulate_cli.test.js`, `test/integration/simulator.test.js`, `test/integration/e2e.test.js`).
+- **REST API**: everything above is available as JSON under `/api`, plus `/health`, which answers 200 `healthy` only while both MongoDB and the broker are connected and 503 `degraded` otherwise (`src/app.js`, `src/routes/`; `test/unit/app.test.js`, `test/integration/devices_api.test.js`, `test/integration/server_start.test.js`).
+- **Operator API key**: every `/api` route requires `Authorization: Bearer <key>`, compared in constant time; a missing or wrong key gets 401 before the request body is parsed. The key is generated at first start into `/secrets/api_key` in the `secrets` volume and is never committed or logged. Dashboard Socket.IO connections need the same key, and the dashboard asks for it and keeps it in `sessionStorage` only (`src/lib/api_auth.js`, `src/lib/secrets.js`, `src/socket.js`, `src/frontend/lib/api.js`, `src/frontend/components/KeyPrompt.jsx`; `test/unit/api_auth.test.js`, `test/unit/secrets.test.js`, `test/unit/socket.test.js`, `test/unit/frontend/`, `test/integration/devices_api.test.js`, `test/integration/e2e.test.js`).
+- **Broker authentication and ACLs**: Mosquitto refuses anonymous clients. A one-shot `secrets` service generates random passwords for a `platform` and a `device` account (plus the provisioning key) into the `secrets` volume on first start and writes the Mosquitto password file. The ACL lets only the platform account read `devices/#` and publish on `provisioned` and `commands`; a device account connects with its device ID as client ID and can only publish its own inbound topics and read its own `provisioned` and `commands` topics (`docker/secrets/init.sh`, `docker/mosquitto/`; `test/integration/broker_auth.test.js`).
+- **Secrets kept out of logs**: the webhook URL is logged only as `scheme://host[:port]` with `<redacted>` for userinfo, path and query; broker passwords, the provisioning key and the API key are read from files and never printed (`src/lib/redact.js`, `src/lib/notifier.js`; `test/unit/redact.test.js`, `test/unit/notifier.test.js`, `test/integration/broker_auth.test.js`).
+- **Device-fleet simulator**: `bin/simulate-devices.js` starts N simulated devices that log in with the device account, self-provision, publish random-walk telemetry, answer commands and run the firmware download (capped at 10 MB and 15 s), MD5 check and progress reporting (`src/sim/device.js`; `test/unit/sim_device.test.js`, `test/unit/simulate_cli.test.js`, `test/integration/simulator.test.js`, `test/integration/e2e.test.js`).
 
 **Not implemented / known limitations**
 
@@ -29,10 +32,12 @@ Personal project built on the 2015-era stack (Node 4.3, Express 4.13, MQTT.js 1.
 - Firmware images live on a local Docker volume, limited to 10 MB each. They are neither signed nor delta-encoded.
 - The notification webhook is exercised only against a local stub server started by the tests (`test/support/webhook_stub.js`). No third-party notification service has been contacted.
 - No email or SMS notifications. The webhook is the only integration point.
-- No broker-level authentication, ACLs or TLS on Mosquitto. The broker accepts anonymous connections on the compose network. The platform drops device messages that fail its own token check, but any broker client can subscribe to `devices/<id>/provisioned` and read a token as it is issued, and can publish commands straight to devices on `devices/<id>/commands`.
+- All devices share one broker account. Anyone holding the device password can connect with another device's ID as client ID, which disconnects that device and lets the impostor read its `provisioned` and `commands` topics; the per-device token still has to be presented on every message the platform accepts. Per-device broker accounts or client certificates are not implemented.
+- No TLS on MQTT or HTTP. Passwords, the provisioning key, the API key and device tokens cross the compose network and the published port in clear text. The app port is published on `127.0.0.1` only.
+- Firmware downloads (`GET /firmware/:deviceType/:version.bin`) need no key, because devices fetch them without the operator key.
+- The dashboard passes the API key to Socket.IO as a query parameter, so it appears in the WebSocket URL.
 - Commands are delivered with QoS 1 and not tracked afterwards. Only firmware updates have tracked acknowledgements.
-- No dashboard user accounts or login. The dashboard assumes a trusted local network.
-- No authentication or API keys on the REST API. Anyone who can reach it can create devices (which returns their tokens), decommission devices, and upload and roll out firmware.
+- No dashboard user accounts or roles. There is one operator API key; whoever has it has full control of the REST API and the dashboard. It is rotated by deleting `/secrets/api_key` and restarting the app.
 - No separate time-series store or long-term retention. Only the last 1000 readings per device are kept.
 - No multi-tenant or horizontally scaled deployment: one app container, one broker, one MongoDB. The presence sweeper runs in-process and assumes a single app instance.
 - Transitive dependencies are frozen by an `npm-shrinkwrap.json` resolved with npm 6, which npm 2 might not honour in every field.
@@ -53,14 +58,20 @@ Transitive dependencies are frozen in `npm-shrinkwrap.json`.
 Everything runs in Docker images from the project's era, so nothing needs installing locally beyond Docker.
 
 ```bash
-docker compose up        # start the stack; the dashboard is on http://localhost:21000
+docker compose up        # start the stack; the dashboard is on http://127.0.0.1:21000
 make smoke               # start the stack, run 3 simulated devices for 15 s, check /api/stats
 ```
 
-To drive the running stack by hand, start the simulator inside the app container:
+The first start generates the broker passwords, the provisioning key and the operator API key in the `secrets` volume. The dashboard and every `/api` request need the API key:
 
 ```bash
-docker compose exec app sh -c 'node bin/simulate-devices.js --count 5 --mqtt mqtt://mosquitto:1883 --key "$PROVISIONING_KEY"'
+docker compose exec app cat /secrets/api_key
+```
+
+To drive the running stack by hand, start the simulator inside the app container. It takes the device account and the provisioning key from the container's `MQTT_DEVICE_USERNAME`, `MQTT_DEVICE_PASSWORD_FILE` and `PROVISIONING_KEY_FILE` variables:
+
+```bash
+docker compose exec app node bin/simulate-devices.js --count 5 --mqtt mqtt://mosquitto:1883
 ```
 
 ## Tests
@@ -92,7 +103,10 @@ docker/
   mongo/
     Dockerfile
   mosquitto/
+    acl
     mosquitto.conf
+  secrets/
+    init.sh
 docker-compose.test.yml
 docker-compose.yml
 docs/
@@ -117,19 +131,24 @@ src/
       AlertsFeed.jsx
       DeviceDetail.jsx
       DeviceList.jsx
+      KeyPrompt.jsx
       StatsBar.jsx
     index.jsx
     lib/
+      api.js
       chart_data.js
   lib/
     alerts.js
+    api_auth.js
     commands.js
     firmware.js
     ids.js
     lifecycle.js
     notifier.js
     presence.js
+    redact.js
     rules.js
+    secrets.js
     tokens.js
     topics.js
   models/
@@ -153,6 +172,7 @@ src/
 test/
   integration/
     alerts_flow.test.js
+    broker_auth.test.js
     commands.test.js
     devices_api.test.js
     e2e.test.js
@@ -167,22 +187,28 @@ test/
   mocha.opts
   setup-babel.js
   support/
+    api.js
     db.js
     fake_io.js
     fake_mqtt.js
+    mqtt_creds.js
     root_hooks.js
     wait_for.js
     webhook_stub.js
   unit/
     alerts_service.test.js
+    api_auth.test.js
     app.test.js
     device_model.test.js
     firmware.test.js
     frontend/
       alerts_feed.test.js
+      api.test.js
+      app.test.js
       chart_data.test.js
       device_detail.test.js
       device_list.test.js
+      key_prompt.test.js
       stats_bar.test.js
     layout_tree.test.js
     lifecycle.test.js
@@ -190,10 +216,12 @@ test/
     notifier.test.js
     presence.test.js
     readme.test.js
+    redact.test.js
     rule_model.test.js
     rules.test.js
     rules_routes.test.js
     sanity.test.js
+    secrets.test.js
     sim_device.test.js
     simulate_cli.test.js
     socket.test.js

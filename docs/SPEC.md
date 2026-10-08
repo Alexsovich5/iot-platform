@@ -48,6 +48,7 @@ Other programs reach the same functions through a REST API. This rebuild keeps t
 10. **Firmware registry.** Firmware binaries are uploaded with `POST /api/firmware?version=&deviceType=` and an `application/octet-stream` body. The platform stores them on a volume, records size and MD5, lists them, and serves them for download. (Original: "firmware update distribution".)
 11. **Firmware update distribution and tracking.** An update can target one device or roll out to every non-decommissioned device of a type. The platform publishes a `firmware_update` command with the URL and MD5, then records per-device progress (`pending → downloading → installing → success|failed`) from `devices/<id>/firmware`. When an update succeeds, `device.firmware` is set to the new version. (Original: "firmware update distribution and tracking".)
 12. **RESTful API for third-party integrations.** All of the above is exposed as JSON over HTTP under `/api`, plus `/health`. (Original: "RESTful API".)
+    Every `/api` route requires the operator API key as `Authorization: Bearer <key>` (constant-time compare, 401 otherwise). The key is generated at first start into `api.keyFile` (`/secrets/api_key` in the `secrets` volume), never committed and never logged. Dashboard Socket.IO connections must present the same key; the dashboard prompts for it and keeps it in `sessionStorage` only.
 13. **Device-fleet simulator.** `bin/simulate-devices.js` starts N simulated devices. Each one self-provisions, publishes telemetry, answers commands and runs the firmware flow. The integration tests and the smoke demo both use it.
 
 ## Out of scope
@@ -58,12 +59,23 @@ Other programs reach the same functions through a REST API. This rebuild keeps t
 | "Sub-second telemetry visualization" | Fabricated metric. The dashboard is live via Socket.IO, but latency is neither measured nor claimed. |
 | "Onboarding reduced from hours to minutes" | Fabricated business metric. Provisioning is automated (feature 3) and nothing more is claimed. |
 | "99.5% uptime / reliable delivery" | Fabricated metric. QoS 1 is used, but availability is not measured. |
-| Broker-level authentication, ACLs and TLS on Mosquitto | Generating a Mosquitto 1.4 password file and ACL adds operational weight beyond a solo core. Authentication is enforced in the platform instead (feature 4). |
+| TLS on Mosquitto and HTTP, per-device broker accounts | Broker authentication and ACLs are in scope (see "Broker authentication" below), but all devices share one broker account and nothing is encrypted in transit. Certificates and per-device accounts add operational weight beyond a solo core. |
 | Email and SMS notifications | These need an external SMTP or SMS provider. The webhook (feature 9) is the integration point. |
 | Separate time-series telemetry store and long-term retention | Keeping the last 1000 embedded points per device is enough for charts at this scale. |
-| Dashboard user accounts and login | Not described in the original. The dashboard assumes a trusted local network. |
+| Dashboard user accounts and roles | Not described in the original. One operator API key protects the REST API and the dashboard. |
 | Multi-tenant or horizontally scaled deployment | One app container, one broker, one MongoDB. |
 | Real hardware / embedded firmware | Replaced by the fleet simulator (feature 13). Firmware binaries are arbitrary blobs. |
+
+### Broker authentication
+
+Mosquitto runs with `allow_anonymous false`, a password file and an ACL (`docker/mosquitto/mosquitto.conf`, `docker/mosquitto/acl`). A one-shot `secrets` compose service (`docker/secrets/init.sh`, run in the `eclipse-mosquitto:1.4.8` image) creates random passwords for a `platform` and a `device` account and the provisioning key in the `secrets` volume on first start, and rebuilds the password file from them on every start. `app` and `mosquitto` start only after it has completed.
+
+| Account | May publish | May receive |
+|---|---|---|
+| `platform` | `devices/+/provisioned`, `devices/+/commands` | `devices/#` |
+| `device` (client ID = device ID) | `devices/<own id>/{register,telemetry,status,alerts,firmware}` | `devices/<own id>/{provisioned,commands}` |
+
+Mosquitto 1.4 grants every SUBSCRIBE and applies `read` rules when it delivers, so a device that subscribes to `devices/+/provisioned` receives only its own replies.
 
 ## Architecture
 
@@ -172,6 +184,8 @@ Device IDs must match `^[A-Za-z0-9_-]{1,64}$`. Any other ID is ignored. The rege
 
 ```
 GET    /health                                   -> {status, uptime, mongodb, mqtt, rejectedMessages}
+                                                    200 status "healthy" only when MongoDB and MQTT are
+                                                    both connected, else 503 "degraded"; no key needed
 GET    /api/stats                                -> {registered: n, online: n, ...}
 GET    /api/devices?status=&type=                -> {devices: [...], count}
 POST   /api/devices {deviceId,name,type,location?,tags?}  -> 201 {device, token}   409 if exists
@@ -191,7 +205,7 @@ POST   /api/devices/:id/firmware {version}       -> 202 FirmwareUpdate
 POST   /api/firmware/:deviceType/:version/rollout -> 202 {updates: [...]}
 GET    /api/firmware/updates?deviceId=&state=    -> {updates}
 ```
-Validation errors return `400 {error}`. Missing resources return `404 {error}`.
+Every `/api` route needs `Authorization: Bearer <operator key>`; without it, or with a wrong key, the answer is `401 {error}` with `WWW-Authenticate: Bearer`, before the body is parsed. `/health` and `GET /firmware/...` are public. Validation errors return `400 {error}`. Missing resources return `404 {error}`.
 
 ### Socket.IO events
 
@@ -200,6 +214,7 @@ Validation errors return `400 {error}`. Missing resources return `404 {error}`.
   - `status {deviceId, data}` is emitted once to everyone with `io.emit`. Clients filter by `deviceId`.
   - `alert {alert}` goes to everyone.
   - `firmware {update}` goes to everyone.
+- The handshake must carry the operator key as the `apiKey` query parameter (or a Bearer `Authorization` header); otherwise the connection is refused with `error "Unauthorized"`.
 - Client to server:
   - `subscribe_device id`
   - `unsubscribe_device id`
@@ -210,9 +225,10 @@ Validation errors return `400 {error}`. Missing resources return `404 {error}`.
 `default.json`:
 ```
 server.port 3000
+api.keyFile "/secrets/api_key"           (created with a random key when missing)
 mongodb.uri mongodb://localhost:27017/iot-platform
-mqtt.{host,port,username,password}
-provisioning.key "change-me"
+mqtt.{host,port,username,password,passwordFile}
+provisioning.{key "", keyFile ""}        (empty key: every self-registration is refused)
 presence.{offlineAfterSec 120, sweepIntervalSec 30}
 telemetry.maxPoints 1000
 alerts.webhookUrl ""
@@ -222,15 +238,19 @@ firmware.publicBaseUrl "http://app:3000"
 
 Other config files:
 
-- `test.json` points at the compose service names and a temporary firmware directory.
-- `custom-environment-variables.json` maps these environment variables: `MONGO_URI`, `MQTT_HOST`, `MQTT_PORT`, `PROVISIONING_KEY`, `ALERT_WEBHOOK_URL`, `FIRMWARE_DIR` and `PUBLIC_BASE_URL`.
+- `test.json` points at the compose service names, the platform broker account (`/secrets/mqtt_platform_password`), a temporary API key file and a temporary firmware directory.
+- `custom-environment-variables.json` maps these environment variables: `API_KEY_FILE`, `MONGO_URI`, `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD_FILE`, `PROVISIONING_KEY`, `PROVISIONING_KEY_FILE`, `ALERT_WEBHOOK_URL`, `FIRMWARE_DIR` and `PUBLIC_BASE_URL`.
+- Secrets are read from files; a configured file that is missing or empty stops the server at start. The webhook URL is only ever logged in redacted form (`scheme://host[:port]`, `<redacted>` for userinfo, path and query).
 
 ### CLI
 
 ```
 node bin/simulate-devices.js --count 5 --prefix sim --interval 2000 \
-     --mqtt mqtt://mosquitto:1883 --key $PROVISIONING_KEY [--duration 30] [--type sensor]
+     --mqtt mqtt://mosquitto:1883 --username device \
+     --password-file /secrets/mqtt_device_password --key-file /secrets/provisioning_key \
+     [--key KEY] [--duration 30] [--type sensor]
 ```
+The broker password is only accepted from a file. Defaults come from `MQTT_DEVICE_USERNAME`, `MQTT_DEVICE_PASSWORD_FILE`, `PROVISIONING_KEY` and `PROVISIONING_KEY_FILE`. Each simulated device connects with its device ID as MQTT client ID, and abandons a firmware download above 10 MB or after 15 s in total.
 
 ## Stack & pinned versions
 
@@ -274,6 +294,7 @@ The official `node:4.3.1` and `mongo:3.2.3` tags (and `node:4.3`, `node:4.3.2`, 
 | app / test | built from `Dockerfile`, `FROM buildpack-deps:jessie` (manifest list) | The base already has xz. The build `ADD`s `https://nodejs.org/dist/v4.3.1/node-v4.3.1-linux-x64.tar.xz` (Node 4.3.1, released 2016-02-16, bundles npm 2.14.12) with `--checksum=sha256:1952d92af83b1bd7ffdb4735999f93a91e0d34ba1315ea1210f16f2e411125e4`, the value from the release's `SHASUMS256.txt`, and unpacks it into `/usr/local`. No apt calls are needed, because the jessie mirrors are archived |
 | mongo | built from `docker/mongo/Dockerfile`, `FROM debian:wheezy` (manifest list) | The build `ADD`s `https://fastdl.mongodb.org/linux/mongodb-linux-x86_64-3.2.3.tgz` (MongoDB 3.2.3, released 2016-02-17) with `--checksum=sha256:7231498ba835e22095843e56d69d3b63f4645d3a434f36bb1ff7bbf4611c478f`, the value from MongoDB's published `.sha256`. It uses the generic Linux build, which needs only glibc, so wheezy needs no extra packages. It runs `mongod --bind_ip 0.0.0.0 --dbpath /data/db`. Replaces the candidate `mongo:3.0`: 3.2 is inside the period and is what the original README names |
 | mosquitto | `eclipse-mosquitto:1.4.8` (schema 2) | `eclipse-mosquitto:1.4` returns 404, so 1.4.8 is the nearest period tag. The image was published later, but it packages Mosquitto 1.4.8 |
+| secrets | `eclipse-mosquitto:1.4.8`, entrypoint `docker/secrets/init.sh` | One-shot job that uses the image's `mosquitto_passwd` and `hexdump` to create the broker passwords, the provisioning key and the password file in the `secrets` volume |
 
 `ADD <url> --checksum` is fetched and verified by BuildKit on the host, so the old CA bundles inside jessie and wheezy never take part in TLS. It needs the Dockerfile 1.6 syntax, so both Dockerfiles start with `# syntax=docker/dockerfile:1.6`. The Node and MongoDB binaries are linux/x64 builds, so the Makefile exports `DOCKER_DEFAULT_PLATFORM=linux/amd64`.
 
@@ -324,13 +345,14 @@ All 9 files from `git ls-files`: keep 0, refactor 9, delete 0.
   - firmware upload → rollout → two SimDevices download from the real `GET /firmware/:type/:version.bin` (app started in-process with `server.start({port: 0})`; with no `publicBaseUrl` and `port: 0`, `start` sets `firmwareService.baseUrl` to `http://localhost:<bound port>` in the listen callback, before it calls back) → MD5 check → both updates `success` (T14, `test/integration/simulator.test.js`)
   - an end-to-end run with `bin/simulate-devices.js`
 - **Lint**: `make lint` runs eslint 1.10.3 inside the image. It is not part of `make test`.
-- **Smoke**: `make smoke` brings up the stack, runs the simulator for 15 s, and asserts through `curl /api/stats` that at least one device is online.
+- **Broker auth** (`test/integration/broker_auth.test.js`, real Mosquitto): anonymous and wrong-password clients are refused; a device account subscribed to `devices/+/provisioned` and `devices/#` receives nothing addressed to another device, while the addressed device does; a device's publishes to another device's topics are dropped; a refused platform password never appears in the platform's log output.
+- **Smoke**: `make smoke` brings up the stack, checks that `/api/stats` refuses a request without the operator key, runs the simulator for 15 s, and asserts through `curl /api/stats` (key read from the app container and passed on stdin) that at least one device is online.
 
 ## Known limitations that will remain
 
-- The Mosquitto broker allows anonymous connections on the private compose network. Any broker client could read `devices/<id>/provisioned` and see a token as it is issued. Authentication is enforced only at the platform layer.
-- The dashboard has no login. It is meant for a trusted local network.
-- The REST API has no authentication or API keys and is meant for a trusted network. That includes device creation (which returns tokens), decommissioning, firmware upload and rollout. The anonymous broker lets any client publish commands to devices on `devices/<id>/commands`.
+- All devices share one broker account. A holder of the device password can connect with another device's ID as client ID, which disconnects that device and lets the impostor read its `provisioned` and `commands` topics. The per-device token is still required on every message the platform accepts.
+- Nothing is encrypted in transit: MQTT and HTTP are plain TCP. The app port is published on `127.0.0.1` only.
+- There is one operator API key and no user accounts or roles. Firmware downloads are public so devices can fetch them without it. The dashboard sends the key to Socket.IO as a query parameter.
 - Only the last 1000 telemetry points per device are retained, embedded in the device document. There is no downsampling or long-term history.
 - The only notification channel is a webhook. There is no email or SMS.
 - Firmware binaries live on a local Docker volume, limited to 10 MB each. They are neither signed nor delta-encoded.

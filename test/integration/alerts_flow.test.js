@@ -3,8 +3,6 @@
 var crypto = require('crypto');
 var expect = require('chai').expect;
 var mqtt = require('mqtt');
-var config = require('config');
-var request = require('supertest');
 var createApp = require('../../src/app');
 var MQTTHandler = require('../../src/mqtt_handler');
 var AlertService = require('../../src/lib/alerts');
@@ -13,11 +11,10 @@ var Alert = require('../../src/models/alert');
 var Rule = require('../../src/models/rule');
 var FakeIo = require('../support/fake_io');
 var db = require('../support/db');
+var creds = require('../support/mqtt_creds');
 var WebhookStub = require('../support/webhook_stub');
-
-function brokerUrl() {
-    return 'mqtt://' + config.get('mqtt.host') + ':' + (parseInt(config.get('mqtt.port'), 10) || 1883);
-}
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 // Calls fetch(cb) every 50 ms until accept(result) is true, then
 // done(null, result); fails after `ms`.
@@ -52,7 +49,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
     var token;
 
     function listAlerts(query, cb) {
-        request(app).get('/api/alerts').query(query).end(function(err, res) {
+        api(app).get('/api/alerts').query(query).end(function(err, res) {
             if (err) {
                 return cb(err);
             }
@@ -77,19 +74,16 @@ describe('alerts flow (real broker and MongoDB)', function() {
             io: io,
             notifier: new Notifier({url: stub.url, timeoutMs: 2000})
         });
-        handler = new MQTTHandler({host: config.get('mqtt.host'), port: config.get('mqtt.port')}, io, {
+        handler = new MQTTHandler(creds.platformConfig(), io, {
             provisioningKey: 'alerts-test-key',
             alerts: alertService
         });
-        app = createApp({mqttHandler: handler, alertService: alertService});
+        app = createApp({apiKey: TEST_API_KEY, mqttHandler: handler, alertService: alertService});
         handler.connect(done);
     });
 
     before(function(done) {
-        client = mqtt.connect(brokerUrl(), {
-            clientId: 'alerts-test-' + crypto.randomBytes(6).toString('hex'),
-            reconnectPeriod: 0
-        });
+        client = mqtt.connect(creds.brokerUrl(), creds.deviceOptions(deviceId));
         client.once('connect', function() {
             done();
         });
@@ -105,7 +99,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
     });
 
     it('creates the rule temperature gt 30 through the API', function(done) {
-        request(app)
+        api(app)
             .post('/api/rules')
             .send({name: 'Too hot', metric: 'temperature', operator: 'gt', threshold: 30,
                 severity: 'critical', cooldownSec: 60})
@@ -116,7 +110,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
                 }
                 expect(res.body._id).to.be.a('string');
                 expect(res.body.enabled).to.equal(true);
-                request(app).get('/api/rules').expect(200).end(function(err2, res2) {
+                api(app).get('/api/rules').expect(200).end(function(err2, res2) {
                     if (err2) {
                         return done(err2);
                     }
@@ -128,7 +122,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
     });
 
     it('provisions a device', function(done) {
-        request(app)
+        api(app)
             .post('/api/devices')
             .send({deviceId: deviceId, name: 'Alert test device', type: 'sensor'})
             .expect(201)
@@ -195,7 +189,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
             }
             expect(body.count).to.equal(1);
             var id = body.alerts[0]._id;
-            request(app)
+            api(app)
                 .post('/api/alerts/' + id + '/ack')
                 .expect(200)
                 .end(function(ackErr, res) {
@@ -218,7 +212,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
     });
 
     it('returns 404 when acknowledging an unknown alert', function(done) {
-        request(app)
+        api(app)
             .post('/api/alerts/56d0f1a2b3c4d5e6f7a8b9c0/ack')
             .expect(404)
             .end(done);
@@ -252,7 +246,7 @@ describe('alerts flow (real broker and MongoDB)', function() {
     });
 
     it('rejects a rule with both deviceId and deviceType with 400', function(done) {
-        request(app)
+        api(app)
             .post('/api/rules')
             .send({name: 'Both', deviceId: deviceId, deviceType: 'sensor',
                 metric: 'temperature', operator: 'gt', threshold: 1})

@@ -4,9 +4,16 @@ services:
     image: iot-platform:test
     environment:
       - NODE_ENV=test
+      - MQTT_DEVICE_PASSWORD_FILE=/secrets/mqtt_device_password
     depends_on:
-      - mongo
-      - mosquitto
+      secrets:
+        condition: service_completed_successfully
+      mongo:
+        condition: service_started
+      mosquitto:
+        condition: service_started
+    volumes:
+      - secrets:/secrets:ro
     command: ["npm", "test"]
     networks:
       - default

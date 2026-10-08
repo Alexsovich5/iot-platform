@@ -5,19 +5,27 @@
  * Starts a fleet of simulated devices against an MQTT broker.
  *
  *   node bin/simulate-devices.js --count 5 --prefix sim --interval 2000 \
- *        --mqtt mqtt://mosquitto:1883 --key $PROVISIONING_KEY \
- *        [--duration 30] [--type sensor]
+ *        --mqtt mqtt://mosquitto:1883 \
+ *        --username device --password-file /secrets/mqtt_device_password \
+ *        --key-file /secrets/provisioning_key \
+ *        [--key KEY] [--duration 30] [--type sensor]
  *
  * Devices are named <prefix>-1 .. <prefix>-<count>. --duration 0 (the
  * default) runs until SIGINT or SIGTERM; either signal stops every device
  * and exits.
+ *
+ * The broker password is only read from a file, so it never shows in the
+ * process list. Defaults come from MQTT_DEVICE_USERNAME,
+ * MQTT_DEVICE_PASSWORD_FILE, PROVISIONING_KEY and PROVISIONING_KEY_FILE.
  */
 
 var SimDevice = require('../src/sim/device');
 var DEVICE_ID_RE = require('../src/lib/ids').DEVICE_ID_RE;
+var secrets = require('../src/lib/secrets');
 
 var DEVICE_TYPES = ['sensor', 'actuator', 'gateway', 'controller'];
-var FLAGS = ['count', 'prefix', 'interval', 'mqtt', 'key', 'duration', 'type'];
+var FLAGS = ['count', 'prefix', 'interval', 'mqtt', 'key', 'key-file', 'username', 'password-file',
+    'duration', 'type'];
 
 function integer(name, raw, min) {
     var value = Number(raw);
@@ -27,13 +35,14 @@ function integer(name, raw, min) {
     return value;
 }
 
-// parseArgs(argv, env) -> {count, prefix, interval, mqtt, key, duration, type}
+// parseArgs(argv, env) -> {count, prefix, interval, mqtt, key, keyFile,
+//                          username, passwordFile, duration, type}
 function parseArgs(argv, env) {
     env = env || {};
     var raw = {};
     for (var i = 0; i < argv.length; i++) {
         var arg = argv[i];
-        var match = /^--([a-z]+)(?:=(.*))?$/.exec(arg);
+        var match = /^--([a-z]+(?:-[a-z]+)*)(?:=(.*))?$/.exec(arg);
         if (!match || FLAGS.indexOf(match[1]) === -1) {
             throw new Error('Unknown option: ' + arg);
         }
@@ -53,6 +62,10 @@ function parseArgs(argv, env) {
         interval: raw.interval !== undefined ? integer('interval', raw.interval, 100) : 2000,
         mqtt: raw.mqtt !== undefined ? raw.mqtt : 'mqtt://localhost:1883',
         key: raw.key !== undefined ? raw.key : (env.PROVISIONING_KEY || ''),
+        keyFile: raw['key-file'] !== undefined ? raw['key-file'] : (env.PROVISIONING_KEY_FILE || ''),
+        username: raw.username !== undefined ? raw.username : (env.MQTT_DEVICE_USERNAME || ''),
+        passwordFile: raw['password-file'] !== undefined ? raw['password-file'] :
+            (env.MQTT_DEVICE_PASSWORD_FILE || ''),
         duration: raw.duration !== undefined ? integer('duration', raw.duration, 0) : 0,
         type: raw.type !== undefined ? raw.type : 'sensor'
     };
@@ -73,13 +86,23 @@ function deviceIds(prefix, count) {
     return ids;
 }
 
-function run(opts) {
+// readSecrets(opts) -> {password, key}, read from the configured files.
+function readSecrets(opts) {
+    return {
+        password: secrets.readSecret('', opts.passwordFile),
+        key: secrets.readSecret(opts.key, opts.keyFile)
+    };
+}
+
+function run(opts, creds) {
     var devices = deviceIds(opts.prefix, opts.count).map(function(id) {
         return new SimDevice({
             id: id,
             type: opts.type,
             mqttUrl: opts.mqtt,
-            provisioningKey: opts.key,
+            username: opts.username,
+            password: creds.password,
+            provisioningKey: creds.key,
             intervalMs: opts.interval
         });
     });
@@ -143,16 +166,19 @@ function run(opts) {
 module.exports = {
     parseArgs: parseArgs,
     deviceIds: deviceIds,
+    readSecrets: readSecrets,
     run: run
 };
 
 if (require.main === module) {
     var options;
+    var creds;
     try {
         options = parseArgs(process.argv.slice(2), process.env);
+        creds = readSecrets(options);
     } catch (e) {
         console.error(e.message);
         process.exit(2);
     }
-    run(options);
+    run(options, creds);
 }

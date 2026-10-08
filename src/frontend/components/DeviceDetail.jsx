@@ -19,6 +19,7 @@ var DeviceDetail = React.createClass({
         device: React.PropTypes.object.isRequired,
         liveTelemetry: React.PropTypes.array.isRequired,
         firmwareVersions: React.PropTypes.array.isRequired,
+        apiFetch: React.PropTypes.func.isRequired,
         socket: React.PropTypes.object
     },
 
@@ -56,14 +57,15 @@ var DeviceDetail = React.createClass({
     },
 
     fetchHistory: function(deviceId) {
-        fetch('/api/devices/' + encodeURIComponent(deviceId) + '/telemetry?limit=' + MAX_POINTS)
+        this.props.apiFetch('/api/devices/' + encodeURIComponent(deviceId) + '/telemetry?limit=' + MAX_POINTS)
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 if (this.unmounted || deviceId !== this.props.device.deviceId) {
                     return;
                 }
                 this.setState({history: data.telemetry || []});
-            }.bind(this));
+            }.bind(this))
+            .catch(function() {});
     },
 
     points: function() {
@@ -133,7 +135,7 @@ var DeviceDetail = React.createClass({
         if (!version) {
             return;
         }
-        fetch('/api/devices/' + encodeURIComponent(this.props.device.deviceId) + '/firmware', {
+        this.props.apiFetch('/api/devices/' + encodeURIComponent(this.props.device.deviceId) + '/firmware', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({version: version})
@@ -151,7 +153,8 @@ var DeviceDetail = React.createClass({
                     message: result.ok ? 'Firmware ' + version + ' update started' :
                         'Firmware update failed: ' + result.body.error
                 });
-            }.bind(this));
+            }.bind(this))
+            .catch(function() {});
     },
 
     renderOptions: function(values) {

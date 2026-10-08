@@ -3,6 +3,9 @@
  *
  * Builds the HTTP app without connecting to MongoDB or MQTT, so it can be
  * constructed in tests with stubbed dependencies.
+ *
+ * Every /api route requires the operator key (options.apiKey) as a Bearer
+ * token; /health, the dashboard files and firmware downloads are public.
  */
 
 'use strict';
@@ -13,11 +16,16 @@ var express = require('express');
 var bodyParser = require('body-parser');
 var mongoose = require('mongoose');
 var config = require('config');
+var apiAuth = require('./lib/api_auth');
 var apiRoutes = require('./routes/api');
 var firmwareRoutes = require('./routes/firmware');
 
 function defaultStats() {
     return {rejectedMessages: 0};
+}
+
+function mongoConnected() {
+    return mongoose.connection.readyState === 1;
 }
 
 function defaultFirmwareDir() {
@@ -46,8 +54,12 @@ function downloadFirmware(req, res, next) {
 
 function createApp(options) {
     options = options || {};
+    if (typeof options.apiKey !== 'string' || options.apiKey.length === 0) {
+        throw new Error('createApp needs an apiKey');
+    }
     var mqttHandler = options.mqttHandler;
     var stats = options.stats || defaultStats;
+    var isDbConnected = options.isDbConnected || mongoConnected;
 
     var app = express();
     app.set('mqttHandler', mqttHandler);
@@ -57,18 +69,24 @@ function createApp(options) {
     app.set('firmwareDir', options.firmwareDir || defaultFirmwareDir());
     app.set('firmwareService', options.firmwareService || null);
 
+    // The key is checked before any body is parsed.
+    app.use('/api', apiAuth.requireApiKey(options.apiKey));
     app.use(bodyParser.json({limit: '100kb'}));
     app.use(express.static(path.join(__dirname, '..', 'public')));
 
     app.use('/api', apiRoutes);
     app.get('/firmware/:deviceType/:version.bin', downloadFirmware);
 
+    // healthy only when both MongoDB and the broker are connected;
+    // anything else, including an unknown state, is 503 degraded.
     app.get('/health', function(req, res) {
         var mqttConnected = !!(mqttHandler && mqttHandler.isConnected());
-        res.json({
-            status: 'healthy',
+        var dbConnected = !!isDbConnected();
+        var healthy = mqttConnected && dbConnected;
+        res.status(healthy ? 200 : 503).json({
+            status: healthy ? 'healthy' : 'degraded',
             uptime: process.uptime(),
-            mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+            mongodb: dbConnected ? 'connected' : 'disconnected',
             mqtt: mqttConnected ? 'connected' : 'disconnected',
             rejectedMessages: stats().rejectedMessages || 0
         });

@@ -6,12 +6,14 @@ var createApp = require('../../src/app');
 var Device = require('../../src/models/device');
 var tokens = require('../../src/lib/tokens');
 var db = require('../support/db');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 describe('device REST API', function() {
     var app;
 
     before(function() {
-        app = createApp({mqttHandler: {isConnected: function() { return false; }}});
+        app = createApp({apiKey: TEST_API_KEY, mqttHandler: {isConnected: function() { return false; }}});
     });
 
     beforeEach(function(done) {
@@ -19,7 +21,7 @@ describe('device REST API', function() {
     });
 
     function create(body, cb) {
-        request(app).post('/api/devices').send(body).end(cb);
+        api(app).post('/api/devices').send(body).end(cb);
     }
 
     describe('POST /api/devices', function() {
@@ -134,7 +136,7 @@ describe('device REST API', function() {
         });
 
         it('omits telemetry and tokenHash', function(done) {
-            request(app).get('/api/devices/detail-1').expect(200).end(function(err, res) {
+            api(app).get('/api/devices/detail-1').expect(200).end(function(err, res) {
                 if (err) {
                     return done(err);
                 }
@@ -146,11 +148,11 @@ describe('device REST API', function() {
         });
 
         it('returns 404 for an unknown device', function(done) {
-            request(app).get('/api/devices/missing-1').expect(404, done);
+            api(app).get('/api/devices/missing-1').expect(404, done);
         });
 
         it('returns 400 for an invalid deviceId', function(done) {
-            request(app).get('/api/devices/' + encodeURIComponent('a b')).expect(400, done);
+            api(app).get('/api/devices/' + encodeURIComponent('a b')).expect(400, done);
         });
     });
 
@@ -165,7 +167,7 @@ describe('device REST API', function() {
         });
 
         it('updates whitelisted fields and ignores the rest', function(done) {
-            request(app)
+            api(app)
                 .put('/api/devices/put-1')
                 .send({
                     name: 'After',
@@ -202,7 +204,7 @@ describe('device REST API', function() {
         });
 
         it('applies a valid status transition', function(done) {
-            request(app)
+            api(app)
                 .put('/api/devices/put-1')
                 .send({status: 'maintenance'})
                 .expect(200)
@@ -220,7 +222,7 @@ describe('device REST API', function() {
                 if (err) {
                     return done(err);
                 }
-                request(app)
+                api(app)
                     .put('/api/devices/put-1')
                     .send({status: 'online'})
                     .expect(409)
@@ -237,11 +239,11 @@ describe('device REST API', function() {
         });
 
         it('returns 400 for an unknown status value', function(done) {
-            request(app).put('/api/devices/put-1').send({status: 'sleeping'}).expect(400, done);
+            api(app).put('/api/devices/put-1').send({status: 'sleeping'}).expect(400, done);
         });
 
         it('returns 404 for an unknown device', function(done) {
-            request(app).put('/api/devices/nobody').send({name: 'x'}).expect(404, done);
+            api(app).put('/api/devices/nobody').send({name: 'x'}).expect(404, done);
         });
     });
 
@@ -252,12 +254,12 @@ describe('device REST API', function() {
                     return done(err);
                 }
                 expect(created.status).to.equal(201);
-                request(app).delete('/api/devices/del-1').expect(200).end(function(delErr, res) {
+                api(app).delete('/api/devices/del-1').expect(200).end(function(delErr, res) {
                     if (delErr) {
                         return done(delErr);
                     }
                     expect(res.body.status).to.equal('decommissioned');
-                    request(app).get('/api/devices/del-1').expect(200).end(function(getErr, got) {
+                    api(app).get('/api/devices/del-1').expect(200).end(function(getErr, got) {
                         if (getErr) {
                             return done(getErr);
                         }
@@ -275,7 +277,7 @@ describe('device REST API', function() {
         });
 
         it('returns 404 for an unknown device', function(done) {
-            request(app).delete('/api/devices/ghost').expect(404, done);
+            api(app).delete('/api/devices/ghost').expect(404, done);
         });
     });
 
@@ -290,7 +292,7 @@ describe('device REST API', function() {
         });
 
         it('filters by status', function(done) {
-            request(app).get('/api/devices?status=online').expect(200).end(function(err, res) {
+            api(app).get('/api/devices?status=online').expect(200).end(function(err, res) {
                 if (err) {
                     return done(err);
                 }
@@ -302,7 +304,7 @@ describe('device REST API', function() {
         });
 
         it('filters by type', function(done) {
-            request(app).get('/api/devices?type=sensor').expect(200).end(function(err, res) {
+            api(app).get('/api/devices?type=sensor').expect(200).end(function(err, res) {
                 if (err) {
                     return done(err);
                 }
@@ -316,7 +318,7 @@ describe('device REST API', function() {
         });
 
         it('counts devices by status', function(done) {
-            request(app).get('/api/stats').expect(200).end(function(err, res) {
+            api(app).get('/api/stats').expect(200).end(function(err, res) {
                 if (err) {
                     return done(err);
                 }
@@ -336,7 +338,7 @@ describe('device REST API', function() {
         });
 
         it('clamps limit=5000 to 1000 points, newest last', function(done) {
-            request(app).get('/api/devices/tele-1/telemetry?limit=5000').expect(200).end(function(err, res) {
+            api(app).get('/api/devices/tele-1/telemetry?limit=5000').expect(200).end(function(err, res) {
                 if (err) {
                     return done(err);
                 }
@@ -348,7 +350,7 @@ describe('device REST API', function() {
         });
 
         it('clamps a limit below 1 to a single point', function(done) {
-            request(app).get('/api/devices/tele-1/telemetry?limit=-3').expect(200).end(function(err, res) {
+            api(app).get('/api/devices/tele-1/telemetry?limit=-3').expect(200).end(function(err, res) {
                 if (err) {
                     return done(err);
                 }
@@ -359,12 +361,51 @@ describe('device REST API', function() {
         });
 
         it('defaults to 100 points', function(done) {
-            request(app).get('/api/devices/tele-1/telemetry').expect(200).end(function(err, res) {
+            api(app).get('/api/devices/tele-1/telemetry').expect(200).end(function(err, res) {
                 if (err) {
                     return done(err);
                 }
                 expect(res.body.telemetry).to.have.length(100);
                 done();
+            });
+        });
+    });
+
+    describe('without the operator key', function() {
+        it('creates no device and returns no token', function(done) {
+            request(app).post('/api/devices').send({deviceId: 'sneaky-1', name: 'Sneaky'}).expect(401)
+                .end(function(err, res) {
+                    if (err) {
+                        return done(err);
+                    }
+                    expect(res.body).to.not.have.property('token');
+                    Device.count({}, function(countErr, n) {
+                        expect(n).to.equal(0);
+                        done(countErr);
+                    });
+                });
+        });
+
+        it('does not decommission a device or reveal it', function(done) {
+            create({deviceId: 'keep-1', name: 'Keep'}, function(err) {
+                if (err) {
+                    return done(err);
+                }
+                request(app).delete('/api/devices/keep-1').set('Authorization', 'Bearer wrong').expect(401)
+                    .end(function(delErr, res) {
+                        if (delErr) {
+                            return done(delErr);
+                        }
+                        expect(res.body).to.not.have.property('deviceId');
+                        Device.findOne({deviceId: 'keep-1'}).select('+tokenHash').exec(function(findErr, device) {
+                            if (findErr) {
+                                return done(findErr);
+                            }
+                            expect(device.status).to.equal('registered');
+                            expect(device.tokenHash).to.be.a('string');
+                            done();
+                        });
+                    });
             });
         });
     });

@@ -1,0 +1,20 @@
+# Topic access for the two broker accounts. Anonymous clients are refused
+# by mosquitto.conf. %c is the connecting client's MQTT client id: a device
+# connects with its device id as client id and may only use its own topics.
+
+# The platform reads everything devices send and answers on the
+# provisioned and commands topics.
+user platform
+topic read devices/#
+topic write devices/+/provisioned
+topic write devices/+/commands
+
+# Device account: publish to its own inbound topics, receive only its own
+# provisioning reply and commands.
+pattern write devices/%c/register
+pattern write devices/%c/telemetry
+pattern write devices/%c/status
+pattern write devices/%c/alerts
+pattern write devices/%c/firmware
+pattern read devices/%c/provisioned
+pattern read devices/%c/commands

@@ -2,19 +2,16 @@
 
 var crypto = require('crypto');
 var expect = require('chai').expect;
-var config = require('config');
-var request = require('supertest');
 var server = require('../../src/server');
 var SimDevice = require('../../src/sim/device');
 var Device = require('../../src/models/device');
 var FirmwareUpdate = require('../../src/models/firmware_update');
 var db = require('../support/db');
+var creds = require('../support/mqtt_creds');
+var api = require('../support/api').api;
+var TEST_API_KEY = require('../support/api').TEST_API_KEY;
 
 var KEY = 'simulator-test-key';
-
-function brokerUrl() {
-    return 'mqtt://' + config.get('mqtt.host') + ':' + (parseInt(config.get('mqtt.port'), 10) || 1883);
-}
 
 // Calls check(cb) every 100 ms until it yields true or `timeout` ms pass.
 function eventually(check, timeout, done) {
@@ -54,7 +51,7 @@ describe('device-fleet simulator against the platform', function() {
     });
 
     before(function(done) {
-        server.start({port: 0, provisioningKey: KEY}, function(err, result) {
+        server.start({apiKey: TEST_API_KEY, port: 0, provisioningKey: KEY}, function(err, result) {
             if (err) {
                 return done(err);
             }
@@ -72,7 +69,9 @@ describe('device-fleet simulator against the platform', function() {
             var sim = new SimDevice({
                 id: id,
                 type: 'sensor',
-                mqttUrl: brokerUrl(),
+                mqttUrl: creds.brokerUrl(),
+                username: 'device',
+                password: creds.deviceOptions(id).password,
                 provisioningKey: KEY,
                 intervalMs: 300
             });
@@ -134,12 +133,12 @@ describe('device-fleet simulator against the platform', function() {
             var allReady = true;
             var failed = null;
             ids.forEach(function(id) {
-                request(started.baseUrl).get('/api/devices/' + id).end(function(err, res) {
+                api(started.baseUrl).get('/api/devices/' + id).end(function(err, res) {
                     if (err || res.status !== 200 || res.body.status !== 'online') {
                         allReady = false;
                         return finish(err);
                     }
-                    request(started.baseUrl).get('/api/devices/' + id + '/telemetry').end(function(tErr, tRes) {
+                    api(started.baseUrl).get('/api/devices/' + id + '/telemetry').end(function(tErr, tRes) {
                         if (tErr || tRes.status !== 200 || tRes.body.telemetry.length < 2) {
                             allReady = false;
                         }
@@ -173,7 +172,7 @@ describe('device-fleet simulator against the platform', function() {
     });
 
     it('rolls firmware out to both simulated devices, which install it from the platform', function(done) {
-        request(started.baseUrl)
+        api(started.baseUrl)
             .post('/api/firmware')
             .query({version: version, deviceType: 'sensor'})
             .set('Content-Type', 'application/octet-stream')
@@ -184,7 +183,7 @@ describe('device-fleet simulator against the platform', function() {
                     return done(err);
                 }
                 expect(res.body.md5).to.equal(md5);
-                request(started.baseUrl)
+                api(started.baseUrl)
                     .post('/api/firmware/sensor/' + version + '/rollout')
                     .expect(202)
                     .end(function(rErr, rRes) {
