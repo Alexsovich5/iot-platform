@@ -89,20 +89,127 @@ h1 {
 .device-card.maintenance { border-left-color: #e65100; }
 .device-card.decommissioned { border-left-color: #000; opacity: 0.6; }
 
-.live-panel {
-    flex: 1 1 320px;
+.detail-panel {
+    flex: 2 1 480px;
     background: #fff;
     border: 1px solid #d8d2c4;
     padding: 12px;
     margin-left: 16px;
 }
 
-.live-latest dt {
+.device-detail h2 {
+    margin: 0 0 8px;
+}
+
+.device-facts {
+    margin: 0 0 12px;
+    overflow: hidden;
+}
+
+.device-facts dt {
+    float: left;
+    clear: left;
+    width: 80px;
     font-weight: bold;
 }
 
-.live-latest dd {
+.device-facts dd {
+    margin: 0 0 4px 80px;
+}
+
+.chart-controls {
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+
+.chart-controls select {
+    margin: 0 12px 0 6px;
+}
+
+.live-count {
+    color: #666;
+}
+
+.telemetry-chart {
+    display: block;
+    max-width: 100%;
+    margin-bottom: 12px;
+}
+
+.command-form,
+.firmware-form {
+    border-top: 1px solid #e5dfd2;
+    padding-top: 8px;
+    margin-bottom: 8px;
+}
+
+.command-form h3,
+.firmware-form h3 {
+    font-size: 14px;
     margin: 0 0 6px;
+}
+
+.command-form input,
+.firmware-form select {
+    margin-right: 6px;
+    font: inherit;
+}
+
+.detail-message {
+    font-size: 14px;
+    color: #444;
+}
+
+.firmware-progress {
+    font-size: 14px;
+    margin: 4px 0 0;
+}
+
+.firmware-progress.success { color: #2e7d32; }
+.firmware-progress.failed { color: #b71c1c; }
+
+.alerts-feed {
+    margin-top: 16px;
+    background: #fff;
+    border: 1px solid #d8d2c4;
+    padding: 12px;
+}
+
+.alerts-feed h2 {
+    margin: 0 0 8px;
+    font-size: 18px;
+}
+
+.alerts-feed ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.alert {
+    border-left: 6px solid #999;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    font-size: 14px;
+}
+
+.alert span,
+.alert small {
+    margin-right: 8px;
+}
+
+.alert-severity {
+    text-transform: uppercase;
+    font-weight: bold;
+}
+
+.alert.info { border-left-color: #616161; }
+.alert.warning { border-left-color: #e65100; }
+.alert.critical { border-left-color: #b71c1c; }
+.alert.acknowledged { opacity: 0.55; }
+
+.alert button {
+    float: right;
 }
 
 .muted {

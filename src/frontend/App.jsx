@@ -1,6 +1,7 @@
 /**
- * Dashboard root component: loads devices and stats over REST and listens
- * for live alerts and telemetry over Socket.IO.
+ * Dashboard root component: loads devices, stats, open alerts and the
+ * firmware catalogue over REST and listens for live alerts, telemetry,
+ * status changes and firmware progress over Socket.IO.
  */
 
 'use strict';
@@ -10,11 +11,14 @@ var React = require('react');
 var io = require('socket.io-client');
 var StatsBar = require('./components/StatsBar.jsx');
 var DeviceList = require('./components/DeviceList.jsx');
+var DeviceDetail = require('./components/DeviceDetail.jsx');
+var AlertsFeed = require('./components/AlertsFeed.jsx');
+var chartData = require('./lib/chart_data');
 
 var STATUSES = ['registered', 'online', 'offline', 'maintenance', 'decommissioned'];
 var TYPES = ['sensor', 'actuator', 'gateway', 'controller'];
 var MAX_LIVE_POINTS = 100;
-var METRICS = ['temperature', 'humidity', 'pressure', 'battery'];
+var MAX_ALERTS = 50;
 
 var App = React.createClass({
     getInitialState: function() {
@@ -24,6 +28,8 @@ var App = React.createClass({
             stats: {},
             selectedDevice: null,
             liveTelemetry: [],
+            firmware: [],
+            firmwareUpdates: {},
             statusFilter: '',
             typeFilter: ''
         };
@@ -33,11 +39,32 @@ var App = React.createClass({
         this.socket = io();
         this.fetchDevices();
         this.fetchStats();
+        this.fetchAlerts();
+        this.fetchFirmware();
 
         this.socket.on('alert', function(payload) {
             this.setState(function(prev) {
-                return {alerts: [payload.alert].concat(prev.alerts).slice(0, 50)};
+                return {alerts: [payload.alert].concat(prev.alerts).slice(0, MAX_ALERTS)};
             });
+        }.bind(this));
+
+        this.socket.on('status', function(payload) {
+            this.updateDevice(payload.deviceId, payload.data);
+            if (payload.data && payload.data.status) {
+                this.fetchStats();
+            }
+        }.bind(this));
+
+        this.socket.on('firmware', function(payload) {
+            var update = payload.update;
+            this.setState(function(prev) {
+                var updates = Object.assign({}, prev.firmwareUpdates);
+                updates[update.deviceId] = update;
+                return {firmwareUpdates: updates};
+            });
+            if (update.state === 'success') {
+                this.updateDevice(update.deviceId, {firmware: update.version});
+            }
         }.bind(this));
 
         this.socket.on('telemetry', function(payload) {
@@ -46,7 +73,7 @@ var App = React.createClass({
             }
             this.setState(function(prev) {
                 return {
-                    liveTelemetry: prev.liveTelemetry.concat([payload.data]).slice(-MAX_LIVE_POINTS)
+                    liveTelemetry: chartData.appendPoint(prev.liveTelemetry, payload.data, MAX_LIVE_POINTS)
                 };
             });
         }.bind(this));
@@ -71,6 +98,49 @@ var App = React.createClass({
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 this.setState({stats: data});
+            }.bind(this));
+    },
+
+    fetchAlerts: function() {
+        fetch('/api/alerts?acknowledged=false')
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                this.setState({alerts: data.alerts});
+            }.bind(this));
+    },
+
+    fetchFirmware: function() {
+        fetch('/api/firmware')
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                this.setState({firmware: data.firmware || []});
+            }.bind(this));
+    },
+
+    updateDevice: function(deviceId, fields) {
+        this.setState(function(prev) {
+            return {
+                devices: prev.devices.map(function(device) {
+                    return device.deviceId === deviceId ? Object.assign({}, device, fields) : device;
+                })
+            };
+        });
+    },
+
+    ackAlert: function(alertId) {
+        fetch('/api/alerts/' + encodeURIComponent(alertId) + '/ack', {method: 'POST'})
+            .then(function(res) { return res.ok ? res.json() : null; })
+            .then(function(acked) {
+                if (!acked) {
+                    return;
+                }
+                this.setState(function(prev) {
+                    return {
+                        alerts: prev.alerts.map(function(alert) {
+                            return alert._id === acked._id ? acked : alert;
+                        })
+                    };
+                });
             }.bind(this));
     },
 
@@ -107,23 +177,38 @@ var App = React.createClass({
         }));
     },
 
-    renderLive: function() {
-        if (!this.state.selectedDevice) {
+    selectedDevice: function() {
+        var id = this.state.selectedDevice;
+        return this.state.devices.filter(function(device) {
+            return device.deviceId === id;
+        })[0] || null;
+    },
+
+    firmwareVersionsFor: function(device) {
+        return this.state.firmware.filter(function(fw) {
+            return fw.deviceType === device.type;
+        }).map(function(fw) {
+            return fw.version;
+        });
+    },
+
+    renderDetail: function() {
+        var device = this.selectedDevice();
+        if (!device) {
             return null;
         }
-        var points = this.state.liveTelemetry;
-        var latest = points[points.length - 1];
+        var update = this.state.firmwareUpdates[device.deviceId];
         return (
-            <div className="live-panel">
-                <h2>{this.state.selectedDevice}</h2>
-                <p className="live-count">{points.length} live readings</p>
-                {latest ? (
-                    <dl className="live-latest">
-                        {METRICS.filter(function(m) { return latest[m] !== undefined; }).map(function(m) {
-                            return [<dt key={m + '-k'}>{m}</dt>, <dd key={m + '-v'}>{latest[m]}</dd>];
-                        })}
-                    </dl>
-                ) : <p className="muted">Waiting for telemetry</p>}
+            <div className="detail-panel">
+                <DeviceDetail device={device}
+                              liveTelemetry={this.state.liveTelemetry}
+                              firmwareVersions={this.firmwareVersionsFor(device)}
+                              socket={this.socket}/>
+                {update ? (
+                    <p className={'firmware-progress ' + update.state}>
+                        Firmware {update.version}: {update.state}
+                    </p>
+                ) : null}
             </div>
         );
     },
@@ -151,8 +236,9 @@ var App = React.createClass({
                     <DeviceList devices={this.filteredDevices()}
                                 selected={this.state.selectedDevice}
                                 onSelect={this.selectDevice}/>
-                    {this.renderLive()}
+                    {this.renderDetail()}
                 </div>
+                <AlertsFeed alerts={this.state.alerts} onAck={this.ackAlert}/>
             </div>
         );
     }
