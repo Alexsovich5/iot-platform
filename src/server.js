@@ -15,6 +15,7 @@ var MQTTHandler = require('./mqtt_handler');
 var createApp = require('./app');
 var Presence = require('./lib/presence');
 var Device = require('./models/device');
+var socket = require('./socket');
 
 function configValue(key, fallback) {
     return config.has(key) ? config.get(key) : fallback;
@@ -28,21 +29,6 @@ function resolveBaseUrl(opts, port) {
         return 'http://localhost:' + port;
     }
     return configValue('firmware.publicBaseUrl', 'http://localhost:' + port);
-}
-
-function setupSocketIO(io, mqttHandler) {
-    io.on('connection', function(socket) {
-        socket.on('subscribe_device', function(deviceId) {
-            socket.join('device_' + deviceId);
-        });
-
-        socket.on('send_command', function(data) {
-            if (!data) {
-                return;
-            }
-            mqttHandler.sendCommand(data.deviceId, data.command, data.payload);
-        });
-    });
 }
 
 // start(opts, cb) boots the platform. Overrides:
@@ -111,7 +97,7 @@ function start(opts, cb) {
     server.on('request', app);
 
     mqttHandler.connect();
-    setupSocketIO(io, mqttHandler);
+    socket.attach(io, mqttHandler, Device);
 
     var port = opts.port !== undefined ? opts.port : configValue('server.port', 3000);
 

@@ -267,6 +267,7 @@ configured threshold to offline and pushes the change to dashboards.
 - modify `src/routes/devices.js`: `POST /devices/:id/commands {command, payload}`. `command` must match `^[a-z_]{1,32}$`. It returns 404 for an unknown device, 409 if the device is decommissioned, 503 if MQTT is disconnected, and otherwise 202 `{commandId}`.
 - create `src/socket.js`: `attach(io, mqttHandler, Device)`. It moves the connection handlers out of `server.js`, validates `send_command` the same way, adds `unsubscribe_device`, and acks errors back to the client.
 - modify `src/server.js` to use `socket.attach`.
+- create `src/lib/commands.js`: `COMMAND_RE` and `dispatch({Device, mqttHandler}, deviceId, command, payload, cb)`, shared by the REST route and `send_command` so both validate and refuse in the same way. `createApp` stores the handler with `app.set('mqttHandler', ...)` so the route can reach it.
 
 **Tests to write first:**
 - `test/unit/socket.test.js`: a fake socket's `send_command` with an invalid command does not call `sendCommand`. `subscribe_device` joins the room.

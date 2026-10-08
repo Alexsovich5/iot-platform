@@ -1,6 +1,6 @@
 /**
  * Device routes: list, provisioning, detail, update, decommission and
- * telemetry history. Mounted at /api/devices by routes/api.js.
+ * telemetry history and command dispatch. Mounted at /api/devices by routes/api.js.
  */
 
 'use strict';
@@ -10,6 +10,7 @@ var Device = require('../models/device');
 var DEVICE_ID_RE = require('../lib/ids').DEVICE_ID_RE;
 var lifecycle = require('../lib/lifecycle');
 var tokens = require('../lib/tokens');
+var commands = require('../lib/commands');
 
 var router = express.Router();
 
@@ -178,6 +179,19 @@ router.put('/:id', function(req, res, next) {
                 }
                 res.json(saved);
             });
+        });
+});
+
+// Send a command to the device over MQTT. The MQTT handler is taken from
+// the app setting 'mqttHandler' (see app.js).
+router.post('/:id/commands', function(req, res, next) {
+    var body = req.body || {};
+    commands.dispatch({Device: Device, mqttHandler: req.app.get('mqttHandler')},
+        req.params.id, body.command, body.payload, function(err, commandId) {
+            if (err) {
+                return err.status ? res.status(err.status).json({error: err.message}) : next(err);
+            }
+            res.status(202).json({commandId: commandId});
         });
 });
 

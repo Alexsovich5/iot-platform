@@ -23,6 +23,7 @@ function createApp(options) {
     var stats = options.stats || defaultStats;
 
     var app = express();
+    app.set('mqttHandler', mqttHandler);
 
     app.use(bodyParser.json({limit: '100kb'}));
     app.use(express.static(path.join(__dirname, '..', 'public')));
