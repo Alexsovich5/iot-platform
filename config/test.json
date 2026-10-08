@@ -4,5 +4,8 @@
   },
   "mqtt": {
     "host": "mosquitto"
+  },
+  "firmware": {
+    "dir": "/tmp/firmware-test"
   }
 }

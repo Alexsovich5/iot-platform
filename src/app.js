@@ -7,14 +7,41 @@
 
 'use strict';
 
+var fs = require('fs');
 var path = require('path');
 var express = require('express');
 var bodyParser = require('body-parser');
 var mongoose = require('mongoose');
+var config = require('config');
 var apiRoutes = require('./routes/api');
+var firmwareRoutes = require('./routes/firmware');
 
 function defaultStats() {
     return {rejectedMessages: 0};
+}
+
+function defaultFirmwareDir() {
+    return config.has('firmware.dir') ? config.get('firmware.dir') : '/data/firmware';
+}
+
+// GET /firmware/:deviceType/:version.bin streams a stored binary.
+function downloadFirmware(req, res, next) {
+    var deviceType = req.params.deviceType;
+    var version = req.params.version;
+    if (!firmwareRoutes.isDeviceType(deviceType) || !firmwareRoutes.isVersion(version)) {
+        return next();
+    }
+    var file = firmwareRoutes.filePath(req.app.get('firmwareDir'), deviceType, version);
+    fs.stat(file, function(err, stat) {
+        if (err || !stat.isFile()) {
+            return next();
+        }
+        res.set('Content-Type', 'application/octet-stream');
+        res.set('Content-Length', String(stat.size));
+        var stream = fs.createReadStream(file);
+        stream.on('error', next);
+        stream.pipe(res);
+    });
 }
 
 function createApp(options) {
@@ -27,11 +54,13 @@ function createApp(options) {
     app.set('alertService', options.alertService || null);
     app.set('Rule', options.Rule || require('./models/rule'));
     app.set('Alert', options.Alert || require('./models/alert'));
+    app.set('firmwareDir', options.firmwareDir || defaultFirmwareDir());
 
     app.use(bodyParser.json({limit: '100kb'}));
     app.use(express.static(path.join(__dirname, '..', 'public')));
 
     app.use('/api', apiRoutes);
+    app.get('/firmware/:deviceType/:version.bin', downloadFirmware);
 
     app.get('/health', function(req, res) {
         var mqttConnected = !!(mqttHandler && mqttHandler.isConnected());

@@ -13,6 +13,9 @@ services:
       - NODE_ENV=production
       - MONGO_URI=mongodb://mongo:27017/iot-platform
       - MQTT_HOST=mosquitto
+      - FIRMWARE_DIR=/data/firmware
+    volumes:
+      - firmware_data:/data/firmware
     networks:
       - default
 
@@ -39,3 +42,4 @@ networks:
 
 volumes:
   mongo_data:
+  firmware_data:
