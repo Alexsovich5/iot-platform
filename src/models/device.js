@@ -5,6 +5,8 @@
 'use strict';
 
 var mongoose = require('mongoose');
+var DEVICE_ID_RE = require('../lib/ids').DEVICE_ID_RE;
+var STATUSES = require('../lib/lifecycle').STATUSES;
 
 var telemetrySchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now },
@@ -15,10 +17,10 @@ var telemetrySchema = new mongoose.Schema({
 }, { _id: false });
 
 var deviceSchema = new mongoose.Schema({
-    deviceId: { type: String, required: true, unique: true, index: true },
+    deviceId: { type: String, required: true, unique: true, index: true, match: DEVICE_ID_RE },
     name: { type: String, required: true },
     type: { type: String, enum: ['sensor', 'actuator', 'gateway', 'controller'], default: 'sensor' },
-    status: { type: String, enum: ['registered', 'online', 'offline', 'maintenance', 'decommissioned'], default: 'registered' },
+    status: { type: String, enum: STATUSES, default: 'registered' },
     firmware: String,
     location: {
         building: String,
@@ -30,9 +32,18 @@ var deviceSchema = new mongoose.Schema({
     tags: [String],
     registeredAt: { type: Date, default: Date.now },
     lastSeen: Date,
-    metadata: mongoose.Schema.Types.Mixed
+    metadata: mongoose.Schema.Types.Mixed,
+    tokenHash: { type: String, select: false },
+    provisionedBy: { type: String, enum: ['api', 'mqtt'] }
 }, {
-    timestamps: true
+    timestamps: true,
+    toJSON: {
+        transform: function(doc, ret) {
+            delete ret.tokenHash;
+            delete ret.__v;
+            return ret;
+        }
+    }
 });
 
 deviceSchema.index({ status: 1 });
